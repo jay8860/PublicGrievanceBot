@@ -51,6 +51,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Process cancelled. Send /start to try again.")
     return ConversationHandler.END
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a help message."""
+    await update.message.reply_text("Just send a photo of the grievance! I'll handle the rest.")
+
+
 async def analyze_image(image_bytes):
     """Sends image to Gemini for analysis."""
     try:
