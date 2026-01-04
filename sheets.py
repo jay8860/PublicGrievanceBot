@@ -93,6 +93,7 @@ CACHE_TTL = 300 # 5 minutes
 def get_officer_map():
     """
     Fetches Officer Details from 'Officer Details' sheet.
+    Schema: Officer_ID, Full_Name, Mobile, Designation, Sector, Zone, Level, Reports_To, Sector_Head_ID
     Returns: { "Category": {"L1": "Name", "L2": "Name", "SLA": 48} }
     """
     global OFFICER_CACHE
@@ -107,7 +108,6 @@ def get_officer_map():
         return {}
 
     try:
-        # Try finding the specific sheet, else default to 'Officer Details'
         try:
             sheet = client.open_by_url(SHEET_URL).worksheet("Officer Details")
         except gspread.WorksheetNotFound:
@@ -115,24 +115,46 @@ def get_officer_map():
             return {}
 
         records = sheet.get_all_records()
-        # Expected cols: Category, L1 Officer, L2 Officer, SLA (Hours)
         
+        # 1. Build ID Lookup
+        # Officer_ID -> {Name, Level, Reports_To}
+        officer_db = {
+            str(row.get("Officer_ID")): {
+                "name": row.get("Full_Name"),
+                "reports_to": str(row.get("Reports_To")),
+                "level": str(row.get("Level"))
+            } for row in records
+        }
+
+        # 2. Group by Sector (Category)
         mapping = {}
         for row in records:
-            cat = row.get("Category")
-            if cat:
-                mapping[cat] = {
-                    "L1": row.get("L1 Officer", "Unassigned"),
-                    "L2": row.get("L2 Officer", "Unassigned"),
-                    "SLA": int(row.get("SLA (Hours)", 48))
+            sector = row.get("Sector")
+            if not sector: continue
+            
+            # Logic: Find the "Ground" officer (Level 1) for this sector
+            # If multiple Lv1s exist, this simple logic picks the last one encountered.
+            # Ideally obtaining "Zone" from the Ticket would map to specific Lv1.
+            # For now, we map Sector -> One Rep.
+            
+            lvl = str(row.get("Level"))
+            if lvl in ["1", "L1", "Field"]:
+                l1_name = row.get("Full_Name")
+                l2_id = str(row.get("Reports_To"))
+                l2_name = officer_db.get(l2_id, {}).get("name", "Unassigned")
+                
+                mapping[sector] = {
+                    "L1": l1_name,
+                    "L2": l2_name,
+                    "SLA": 48 # Default as column is missing
                 }
         
         # Update Cache
         OFFICER_CACHE["data"] = mapping
         OFFICER_CACHE["timestamp"] = now
-        logger.info(f"Refreshed Officer Map: {len(mapping)} categories found.")
+        logger.info(f"Refreshed Officer Map: {len(mapping)} sectors mapped.")
         return mapping
 
     except Exception as e:
         logger.error(f"Error fetching officer map: {e}")
-        return OFFICER_CACHE.get("data", {}) # Return stale data if fail
+        return OFFICER_CACHE.get("data", {})
