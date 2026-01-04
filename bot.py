@@ -119,7 +119,19 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_location = update.message.location
     lat = user_location.latitude
     lon = user_location.longitude
+    accuracy = user_location.horizontal_accuracy
     
+    # Accuracy Check
+    if accuracy is not None and accuracy > 25:
+        await update.message.reply_text(
+            f"⚠️ <b>Low GPS Accuracy detected ({accuracy:.1f}m).</b>\n"
+            "We need precise location (within 20m) for the officer.\n\n"
+            "Please wait a few seconds for your GPS to stabilize and <b>Share Location again</b>.",
+            parse_mode='HTML'
+        )
+        # Keep them in the LOCATION state to try again
+        return LOCATION
+
     # Retrieve previous analysis
     analysis_result = context.user_data.get('analysis', 'No Analysis Data')
     
@@ -138,6 +150,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"📂 <b>Category:</b> {category}\n"
         f"👮 <b>Assigned To:</b> {assigned_officer}\n"
         f"📍 <b>Location:</b> <a href='{map_link}'>View on Map</a>\n"
+        f"🎯 <b>Accuracy:</b> {accuracy}m\n"
         f"🎫 <b>Ticket ID:</b> #TKT-{update.message.message_id}\n\n"
         f"<i>We have notified the designated officer.</i>"
     )
