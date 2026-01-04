@@ -20,7 +20,7 @@ logging.basicConfig(
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash') # Logic: Fast and good at vision
+model = genai.GenerativeModel('gemini-2.0-flash') # Logic: Validated model from list_models.py
 
 # --- MOCK DATABASE & OFFICERS ---
 OFFICER_CONTACTS = {
