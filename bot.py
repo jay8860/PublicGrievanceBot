@@ -10,6 +10,7 @@ import google.generativeai as genai
 from PIL import Image
 import io
 import json
+import requests
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8577255418:AAF2h6C0ICMs4IuaweH_5OnSNyWOxYCKQQ4")
@@ -55,9 +56,42 @@ def check_rate_limit(user_id: int) -> bool:
     RATE_LIMIT_STORE[user_id] = valid_history
     return True
 
-def get_image_hash(image_bytes: bytes) -> str:
     """Returns MD5 hash of image bytes for duplicate detection."""
     return hashlib.md5(image_bytes).hexdigest()
+
+def get_address_details(lat, lon):
+    """
+    Reverse Geocodes Lat/Lon to get Pin Code and Area.
+    Uses OpenStreetMap Nominatim API (Free).
+    """
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}"
+        headers = {'User-Agent': 'PublicGrievanceBot/1.0 (jayantnahata@example.com)'}
+        response = requests.get(url, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            address = data.get('address', {})
+            
+            pincode = address.get('postcode', '')
+            
+            # Smart Area Detection
+            # Prefer: Suburb > Neighbourhood > Residential > Village > City District > City
+            area = (
+                address.get('suburb') or 
+                address.get('neighbourhood') or 
+                address.get('residential') or
+                address.get('village') or
+                address.get('city_district') or
+                address.get('city') or
+                "Unknown Area"
+            )
+            
+            return {"pincode": pincode, "area": area}
+    except Exception as e:
+        logging.error(f"Geocoding Error: {e}")
+    
+    return {"pincode": "", "area": ""}
 
 # --- BOT FUNCTIONS ---
 
@@ -232,6 +266,13 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     map_link = f"https://www.google.com/maps?q={lat},{lon}"
     ticket_id = f"TKT-{update.message.message_id}"
     
+    # --- GEOCODING ---
+    # Run in thread to avoid blocking? It uses requests (blocking). 
+    # Better to run in thread or use async client. 
+    # For simplicity/speed in this context, we'll run it synchronously or slightly block.
+    # Given it's one call, it's okay, but let's wrap in to_thread for safety.
+    geo_info = await asyncio.to_thread(get_address_details, lat, lon)
+    
     # --- LOG TO SHEETS ---
     ticket_data = {
         "ticket_id": ticket_id,
@@ -243,8 +284,10 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "officer": assigned_officer,
         "photo_url": "N/A",
         "map_link": map_link,
-        "citizen_chat_id": update.effective_chat.id, # New: Store Citizen ID
-        "photo_file_id": photo_file_id # New: Store File ID for resending
+        "citizen_chat_id": update.effective_chat.id,
+        "photo_file_id": photo_file_id,
+        "pincode": geo_info.get("pincode"),
+        "area": geo_info.get("area")
     }
     # Run in background so it doesn't block the bot
     asyncio.create_task(asyncio.to_thread(log_ticket, ticket_data))
@@ -256,6 +299,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"🚨 <b>New Grievance Assigned!</b>\n"
                 f"🎫 <b>Ticket:</b> #{ticket_id}\n"
                 f"📂 <b>Category:</b> {category}\n"
+                f"📍 <b>Area:</b> {geo_info.get('area')} ({geo_info.get('pincode')})\n"
                 f"📝 <b>Desc:</b> {description}\n\n"
                 f"👉 <b>Action:</b> Reply to this message with a <b>PHOTO</b> to mark as RESOLVED."
             )

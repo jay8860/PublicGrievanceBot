@@ -52,7 +52,7 @@ def log_ticket(ticket_data):
         sheet = client.open_by_url(SHEET_URL).sheet1
         
         # Ensure Headers Exist
-        headers = ["Ticket ID", "Timestamp", "Category", "Severity", "Status", "Officer", "Description", "Lat", "Long", "Photo URL", "Map Link", "Integrity Metric", "Chat ID", "PhotoID", "After File ID", "User Rating"]
+        headers = ["Ticket ID", "Timestamp", "Category", "Severity", "Status", "Officer", "Description", "Lat", "Long", "Photo URL", "Map Link", "Integrity Metric", "Chat ID", "PhotoID", "After File ID", "User Rating", "Pin Code", "Area"]
         if sheet.row_values(1) != headers:
             # If empty or wrong, set headers (Optional: check if first row is empty)
             if not sheet.row_values(1): 
@@ -76,7 +76,9 @@ def log_ticket(ticket_data):
             ticket_data.get("citizen_chat_id", ""), # Col 13
             ticket_data.get("photo_file_id", ""), # Col 14
             "", # Col 15: After File ID (Empty on creation)
-            ""  # Col 16: User Rating (Empty on creation)
+            "",  # Col 16: User Rating (Empty on creation)
+            ticket_data.get("pincode", ""), # Col 17
+            ticket_data.get("area", "")     # Col 18
         ]
         
         sheet.append_row(row)
