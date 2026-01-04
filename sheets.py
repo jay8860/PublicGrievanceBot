@@ -78,6 +78,61 @@ def log_ticket(ticket_data):
         sheet.append_row(row)
         logger.info(f"Ticket {ticket_data.get('ticket_id')} logged to Sheets.")
         return True
+        return True
     except Exception as e:
         logger.error(f"Sheet Write Error: {e}")
         return False
+
+# --- CACHE FOR OFFICERS ---
+OFFICER_CACHE = {
+    "data": {},
+    "timestamp": 0
+}
+CACHE_TTL = 300 # 5 minutes
+
+def get_officer_map():
+    """
+    Fetches Officer Details from 'Officer Details' sheet.
+    Returns: { "Category": {"L1": "Name", "L2": "Name", "SLA": 48} }
+    """
+    global OFFICER_CACHE
+    now = time.time()
+    
+    # Return Cache if valid
+    if now - OFFICER_CACHE["timestamp"] < CACHE_TTL and OFFICER_CACHE["data"]:
+        return OFFICER_CACHE["data"]
+
+    client = get_client()
+    if not client:
+        return {}
+
+    try:
+        # Try finding the specific sheet, else default to 'Officer Details'
+        try:
+            sheet = client.open_by_url(SHEET_URL).worksheet("Officer Details")
+        except gspread.WorksheetNotFound:
+            logger.warning("'Officer Details' sheet not found! Using fallback.")
+            return {}
+
+        records = sheet.get_all_records()
+        # Expected cols: Category, L1 Officer, L2 Officer, SLA (Hours)
+        
+        mapping = {}
+        for row in records:
+            cat = row.get("Category")
+            if cat:
+                mapping[cat] = {
+                    "L1": row.get("L1 Officer", "Unassigned"),
+                    "L2": row.get("L2 Officer", "Unassigned"),
+                    "SLA": int(row.get("SLA (Hours)", 48))
+                }
+        
+        # Update Cache
+        OFFICER_CACHE["data"] = mapping
+        OFFICER_CACHE["timestamp"] = now
+        logger.info(f"Refreshed Officer Map: {len(mapping)} categories found.")
+        return mapping
+
+    except Exception as e:
+        logger.error(f"Error fetching officer map: {e}")
+        return OFFICER_CACHE.get("data", {}) # Return stale data if fail
