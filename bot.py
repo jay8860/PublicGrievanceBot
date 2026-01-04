@@ -16,7 +16,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8577255418:AAF2h6C0ICMs4Iu
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCgmROdP8BWwA3ZeHJlZw0jo0R-I-YRWHU")
 
 # --- TRIAGE CONFIG ---
-MAX_REPORTS_PER_HOUR = 5
+MAX_REPORTS_PER_HOUR = 100 # Increased for testing
 RATE_LIMIT_STORE = {} # {user_id: [timestamp1, timestamp2]}
 DUPLICATE_HASHES = set() # Store MD5 hashes of processed images (In-memory for demo)
 
