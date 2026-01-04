@@ -10,7 +10,7 @@ import io
 # --- CONFIGURATION ---
 # Replace these with your actual keys or set them as environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8577255418:AAF2h6C0ICMs4IuaweH_5OnSNyWOxYCKQQ4")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCu-e_StxwnqKr5znXoL5FkFldxhTNXORU")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCgmROdP8BWwA3ZeHJlZw0jo0R-I-YRWHU")
 
 # Configure Logging
 logging.basicConfig(
@@ -20,7 +20,7 @@ logging.basicConfig(
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash') # Logic: Validated model from list_models.py
+model = genai.GenerativeModel('gemini-flash-latest') # Tested & Working
 
 # --- MOCK DATABASE & OFFICERS ---
 OFFICER_CONTACTS = {
