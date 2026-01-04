@@ -74,7 +74,9 @@ def log_ticket(ticket_data):
             ticket_data.get("map_link"),
             "Validated", # Default Integrity
             ticket_data.get("citizen_chat_id", ""), # Col 13
-            ticket_data.get("photo_file_id", "")  # Col 14
+            ticket_data.get("photo_file_id", ""), # Col 14
+            "", # Col 15: After File ID (Empty on creation)
+            ""  # Col 16: User Rating (Empty on creation)
         ]
         
         sheet.append_row(row)
@@ -101,21 +103,13 @@ def update_ticket_status(ticket_id, status, after_photo_url="N/A"):
             logger.warning(f"Ticket {ticket_id} not found for update.")
             return False
         
-        # Update Status (Col 5) and Photo (Col 10 or append new column for After Photo)
-        # Assuming Status is Col 5 (E)
+        # Update Status (Col 5)
         sheet.update_cell(cell.row, 5, status)
         
-        # Note: We are overwriting Photo URL for now or we could add a new column
-        # Let's add a "Resolution Photo" column if it doesn't exist?
-        # For simplicity, we'll just log it to a new "Resolution Note" or similar if needed.
-        # But user asked for showing Before/After. 
-        # Let's assume we append " | After: url" to the Photo URL column (Col 10)
-        # Or better, let's just create a new Column if we can.
-        
-        # Simple Approach: Append to Description
-        # current_desc = sheet.cell(cell.row, 7).value
-        # sheet.update_cell(cell.row, 7, f"{current_desc} | Resolution: {after_photo_url}")
-        
+        # Update After Photo ID (Col 15)
+        if after_photo_url and after_photo_url != "N/A":
+             sheet.update_cell(cell.row, 15, after_photo_url)
+
         return True
     except Exception as e:
         logger.error(f"Sheet Update Error: {e}")
