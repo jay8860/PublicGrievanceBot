@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python3", "nodejs"]
+
+[phases.build]
+cmds = ["bash build.sh"]
+
+[start]
+cmd = "bash start.sh"

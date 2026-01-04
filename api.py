@@ -34,9 +34,21 @@ if os.path.exists("dashboard/dist"):
 @app.get("/")
 def read_root():
     """Serves the React Frontend Entry Point."""
-    if os.path.exists("dashboard/dist/index.html"):
-        return FileResponse("dashboard/dist/index.html")
-    return {"message": "Dashboard Build Not Found. Run 'npm run build' in dashboard/ folder."}
+    dist_path = "dashboard/dist/index.html"
+    if os.path.exists(dist_path):
+        return FileResponse(dist_path)
+    
+    # Debug Info
+    cwd = os.getcwd()
+    ls = os.listdir(".")
+    dash_ls = os.listdir("dashboard") if os.path.exists("dashboard") else "dashboard_not_found"
+    return {
+        "error": "Dashboard Build Not Found",
+        "cwd": cwd,
+        "ls_root": ls,
+        "ls_dashboard": dash_ls,
+        "tip": "Check Build Logs for npm errors."
+    }
 
 # --- CACHING LOGIC ---
 def get_cached_dataframe():
