@@ -73,9 +73,9 @@ def get_cached_dataframe():
         
         # Normalize Columns
         # Expects: Ticket ID, Timestamp, Category, Severity, Status, Officer, Description, Lat, Long, Photo URL, Map Link, Integrity Metric
-        # Ensure numeric Lat/Long
-        df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
-        df['Long'] = pd.to_numeric(df['Long'], errors='coerce')
+        if not df.empty and 'Lat' in df.columns and 'Long' in df.columns:
+            df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
+            df['Long'] = pd.to_numeric(df['Long'], errors='coerce')
         
         CACHE["data"] = df
         CACHE["timestamp"] = now
@@ -83,12 +83,35 @@ def get_cached_dataframe():
         return df
     except Exception as e:
         logger.error(f"Data Fetch Error: {e}")
-        # If fetch fails but we have old cache, return it even if expired
         if CACHE["data"] is not None:
-            return CACHE["data"]
-        raise HTTPException(status_code=500, detail="Failed to fetch data")
+             return CACHE["data"]
+        # Allow returning empty DF instead of crashing if persistent error?
+        # Better to bubble up so we know it failed, but for Frontend it's better to show empty than crash?
+        # Let's re-raise to see error in debug endpoint.
+        raise e
 
 # --- ENDPOINTS ---
+
+@app.get("/api/debug_auth")
+def debug_auth():
+    """Debugs Google Sheets Connection."""
+    try:
+        client = get_client()
+        if not client:
+            return {"status": "error", "message": "Client is None. Check Credentials."}
+        
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        data = sheet.get_all_records()
+        return {
+            "status": "ok", 
+            "row_count": len(data),
+            "columns": list(data[0].keys()) if data else "No Data",
+            "sample": data[:2] if data else []
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "detail": str(e), "trace": traceback.format_exc()}
+
 
 @app.get("/api/stats")
 def get_stats():
