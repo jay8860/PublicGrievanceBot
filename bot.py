@@ -59,6 +59,10 @@ def get_image_hash(image_bytes: bytes) -> str:
 
 # --- BOT FUNCTIONS ---
 
+async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Returns the user's numeric Chat ID."""
+    await update.message.reply_text(f"Your Chat ID is: `{update.effective_chat.id}`", parse_mode='Markdown')
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int: # Changed return type for consistency
     """Send a welcome message."""
     user = update.effective_user
@@ -68,6 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int: # Ch
         "Please <b>send me a photo</b> of the issue (e.g., Pothole, Garbage, Broken Light) and I will route it to the correct officer.",
     )
     return ConversationHandler.END
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels and ends the conversation."""
@@ -278,6 +283,7 @@ def main() -> None:
     )
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("id", cmd_id)) # New ID Command
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(conv_handler)
 
