@@ -1,1 +1,1 @@
-worker: python grievance_bot/bot.py
+worker: python bot.py
