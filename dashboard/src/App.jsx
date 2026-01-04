@@ -3,8 +3,9 @@ import axios from 'axios';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { LayoutDashboard, Map as MapIcon, Table as TableIcon, Filter, RefreshCcw } from 'lucide-react';
+import { LayoutDashboard, Map as MapIcon, Table as TableIcon, Filter, RefreshCcw, LogOut } from 'lucide-react';
 import L from 'leaflet';
+import Login from './Login'; // Import Login
 
 // Fix Leaflet Icon
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -23,6 +24,7 @@ L.Marker.prototype.options.icon = DefaultIcon;
 const API_BASE = import.meta.env.PROD ? '/api' : (import.meta.env.VITE_API_URL || 'http://localhost:8000/api');
 
 function App() {
+    const [token, setToken] = useState(localStorage.getItem('token') || null); // Auth State
     const [view, setView] = useState('dashboard'); // dashboard, map, list
     const [stats, setStats] = useState(null);
     const [filters, setFilters] = useState({});
@@ -36,12 +38,20 @@ function App() {
     const [selectedSeverity, setSelectedSeverity] = useState('');
     const [search, setSearch] = useState('');
 
-    // Initial Fetch
+    // Check Token on Mount (Redundant with useState default but safe)
     useEffect(() => {
-        fetchStats();
-        fetchFilters();
-        fetchData(); // Works & Locations
+        const storedToken = localStorage.getItem('token');
+        if (storedToken) setToken(storedToken);
     }, []);
+
+    // Initial Fetch (Only if authenticated)
+    useEffect(() => {
+        if (token) {
+            fetchStats();
+            fetchFilters();
+            fetchData();
+        }
+    }, [token]);
 
     // Re-fetch when filters change
     useEffect(() => {
@@ -84,6 +94,12 @@ function App() {
         setLoading(false);
     };
 
+    // --- HELPERS ---
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        setToken(null);
+    };
+
     // --- COMPONENTS ---
 
     const StatCard = ({ title, value, color }) => (
@@ -92,6 +108,11 @@ function App() {
             <h3 className={`text-2xl font-bold mt-1`} style={{ color: color }}>{value}</h3>
         </div>
     );
+
+    // --- AUTH GUARD ---
+    if (!token) {
+        return <Login onLogin={setToken} />;
+    }
 
     return (
         <div className="min-h-screen bg-gray-50 font-sans text-gray-800">
@@ -125,8 +146,12 @@ function App() {
                         >
                             <div className="flex items-center gap-2"><TableIcon size={16} /> List</div>
                         </button>
-                        <button onClick={fetchData} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg">
+                        <button onClick={fetchData} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Refresh Data">
                             <RefreshCcw size={18} />
+                        </button>
+                        <div className="h-6 w-px bg-gray-300 mx-1 self-center"></div>
+                        <button onClick={handleLogout} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Logout">
+                            <LogOut size={18} />
                         </button>
                     </div>
                 </div>
