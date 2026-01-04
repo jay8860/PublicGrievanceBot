@@ -25,7 +25,7 @@ const API_BASE = import.meta.env.PROD ? '/api' : (import.meta.env.VITE_API_URL |
 
 function App() {
     const [token, setToken] = useState(localStorage.getItem('token') || null); // Auth State
-    const [view, setView] = useState('dashboard'); // dashboard, map, list
+    const [view, setView] = useState('map'); // map, list
     const [stats, setStats] = useState(null);
     const [filters, setFilters] = useState({});
     const [works, setWorks] = useState([]);
@@ -128,12 +128,7 @@ function App() {
                     </div>
 
                     <div className="flex gap-2">
-                        <button
-                            onClick={() => setView('dashboard')}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${view === 'dashboard' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
-                        >
-                            Overview
-                        </button>
+
                         <button
                             onClick={() => setView('map')}
                             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${view === 'map' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
@@ -265,7 +260,7 @@ function App() {
                         )}
 
                         {/* MAP VIEW */}
-                        {(view === 'map' || view === 'dashboard') && (
+                        {(view === 'map') && (
                             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-[600px] relative">
                                 <MapContainer center={[18.89, 81.35]} zoom={10} style={{ height: '100%', width: '100%' }}>
                                     <TileLayer
