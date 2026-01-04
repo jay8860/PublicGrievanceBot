@@ -20,7 +20,7 @@ logging.basicConfig(
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash-latest') # Updated to latest alias
+model = genai.GenerativeModel('gemini-1.5-flash') # Logic: Fast and good at vision
 
 # --- MOCK DATABASE & OFFICERS ---
 OFFICER_CONTACTS = {
