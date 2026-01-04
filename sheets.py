@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 # --- CONFIGURATION ---
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1gv_hJhtaiVw1AhYytjY3kTy59QDRD1BFCh656tAtj5s/edit?usp=sharing"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1d0a0lfbMyqFJpnn45kC5jZO2uQbcQkrcHlAF_yaP7qA/edit?usp=sharing"
 CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS") # User must set this in Railway
 
 # Setup Logging
