@@ -1,16 +1,24 @@
 import os
 import logging
 import asyncio
+import hashlib
+import time
+from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import google.generativeai as genai
 from PIL import Image
 import io
+import json
 
 # --- CONFIGURATION ---
-# Replace these with your actual keys or set them as environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8577255418:AAF2h6C0ICMs4IuaweH_5OnSNyWOxYCKQQ4")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCgmROdP8BWwA3ZeHJlZw0jo0R-I-YRWHU")
+
+# --- TRIAGE CONFIG ---
+MAX_REPORTS_PER_HOUR = 5
+RATE_LIMIT_STORE = {} # {user_id: [timestamp1, timestamp2]}
+DUPLICATE_HASHES = set() # Store MD5 hashes of processed images (In-memory for demo)
 
 # Configure Logging
 logging.basicConfig(
@@ -20,7 +28,7 @@ logging.basicConfig(
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-flash-latest') # Tested & Working
+model = genai.GenerativeModel('gemini-flash-latest')
 
 # --- STATES ---
 LOCATION = 1
@@ -34,10 +42,30 @@ OFFICER_CONTACTS = {
     "Other": "General_Admin"
 }
 
+# --- HELPERS: INTEGRITY CHECKS ---
+
+def check_rate_limit(user_id: int) -> bool:
+    """Returns True if user is allowed, False if rate limited."""
+    now = time.time()
+    history = RATE_LIMIT_STORE.get(user_id, [])
+    # Keep only timestamps within last 1 hour (3600 seconds)
+    valid_history = [t for t in history if now - t < 3600]
+    
+    if len(valid_history) >= MAX_REPORTS_PER_HOUR:
+        return False
+    
+    valid_history.append(now)
+    RATE_LIMIT_STORE[user_id] = valid_history
+    return True
+
+def get_image_hash(image_bytes: bytes) -> str:
+    """Returns MD5 hash of image bytes for duplicate detection."""
+    return hashlib.md5(image_bytes).hexdigest()
+
 # --- BOT FUNCTIONS ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a welcome message when the command /start is issued."""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int: # Changed return type for consistency
+    """Send a welcome message."""
     user = update.effective_user
     await update.message.reply_html(
         f"Hi {user.mention_html()}! \n\n"
@@ -55,63 +83,96 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Send a help message."""
     await update.message.reply_text("Just send a photo of the grievance! I'll handle the rest.")
 
-
-async def analyze_image(image_bytes):
-    """Sends image to Gemini for analysis."""
+async def analyze_image_with_bouncer(image_bytes):
+    """Sends image to Gemini for Triage (Relevance Check) + Analysis."""
     try:
-        # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_bytes))
         
+        # PROMPT: acts as the "Bouncer"
         prompt = """
-        Analyze this image for a public grievance system. 
-        1. Identify the main issue. CATEGORIES: [Pothole, Garbage, Streetlight, Water Leakage, Other].
-        2. Estimate Severity: [High, Medium, Low].
-        3. Provide a 1-sentence description.
+        Analyze this image strictly for a Public Grievance System.
         
-        Return response in this format:
-        Category: <Category>
-        Severity: <Severity>
-        Description: <Description>
+        Phase 1: RELEVANCE CHECK (The Bouncer)
+        - Is this a photo of a public infrastructure issue (pothole, garbage, broken light, water leak)?
+        - REJECT IF: Selfie, meme, screenshot, text document, blurry/unclear, indoor residential, or unrelated object.
+        - Return "is_valid": false if rejected.
+
+        Phase 2: ANALYSIS (If Valid)
+        - Identify Category: [Roads, Sanitation, Electricity, Water, Other] (Map Pothole->Roads, Garbage->Sanitation etc)
+        - Severity: [High, Medium, Low]
+        - Description: 1 sentence summary.
+
+        OUTPUT FORMAT: JSON ONLY
+        {
+            "is_valid": boolean,
+            "rejection_reason": "string (only if false, strictly polite)",
+            "category": "string",
+            "severity": "string",
+            "description": "string"
+        }
         """
         
-        response = model.generate_content([prompt, image])
-        return response.text
+        response = model.generate_content([prompt, image], generation_config={"response_mime_type": "application/json"})
+        return json.loads(response.text)
     except Exception as e:
         logging.error(f"AI Error: {e}")
-        return "Error analyzing image. Please try again."
+        return None
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Step 1: Analyzes photo and asks for location."""
-    status_msg = await update.message.reply_text("🧐 Analyzing your photo with AI... Please wait.")
+    """Step 1: Triage -> Analyze -> Ask Location."""
+    user = update.effective_user
+    
+    # Check 1: Rate Limiting
+    if not check_rate_limit(user.id):
+        await update.message.reply_text("⚠️ <b>Rate Limit Exceeded.</b>\nYou have sent too many reports recently. Please try again in an hour.", parse_mode='HTML')
+        return ConversationHandler.END
+
+    status_msg = await update.message.reply_text("🧐 Analyzing and validating your photo... Please wait.")
     
     try:
-        # 1. Get the photo file
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         
-        # 2. Analyze with Gemini
-        analysis_result = await analyze_image(photo_bytes)
+        # Check 2: Duplicate Detection
+        img_hash = get_image_hash(photo_bytes)
+        if img_hash in DUPLICATE_HASHES:
+            await status_msg.edit_text("⚠️ <b>Duplicate Detected.</b>\nWe have already processed this exact photo.", parse_mode='HTML')
+            return ConversationHandler.END
         
-        # 3. Store analysis in user_data context
-        context.user_data['analysis'] = analysis_result
+        # 3. Analyze with "Bouncer"
+        analysis = await analyze_image_with_bouncer(photo_bytes)
         
+        if not analysis:
+            await status_msg.edit_text("❌ Technical Error analyzing image. Please try again.")
+            return ConversationHandler.END
+
+        # Check 3: AI Relevance
+        if not analysis.get("is_valid", False):
+            reason = analysis.get("rejection_reason", "Image does not appear to be a public grievance.")
+            await status_msg.edit_text(f"❌ <b>Image Rejected</b>\n\n{reason}\n\n<i>Please upload a clear photo of a public infrastructure issue.</i>", parse_mode='HTML')
+            return ConversationHandler.END
+
+        # If Valid -> Mark hash as processed
+        DUPLICATE_HASHES.add(img_hash)
+        context.user_data['analysis'] = analysis # Store JSON
+
         # 4. Ask for Location
         location_keyboard = [[KeyboardButton(text="📍 Share Current Location", request_location=True)]]
         reply_markup = ReplyKeyboardMarkup(location_keyboard, one_time_keyboard=True, resize_keyboard=True)
         
         await status_msg.edit_text(
-            f"✅ <b>Issue Detected!</b>\n\n{analysis_result}\n\n"
-            "📍 <b>Step 2:</b> Please share your **Location** so we can send the officer to the right spot.",
+            f"✅ <b>Issue Verified: {analysis['category']}</b>\n\n"
+            f"📝 {analysis['description']}\n\n"
+            "📍 <b>Step 2:</b> Please share your **Location** to finalize.",
             parse_mode='HTML'
         )
-        # Send a separate message with the button because edit_text can't add a new keyboard sometimes
-        await update.message.reply_text("Click the button below to share location 👇", reply_markup=reply_markup)
+        await update.message.reply_text("Click below to share location 👇", reply_markup=reply_markup)
         
         return LOCATION
 
     except Exception as e:
         logging.error(f"Handler Error: {e}")
-        await status_msg.edit_text("❌ Something went wrong while processing the image.")
+        await status_msg.edit_text("❌ Something went wrong.")
         return ConversationHandler.END
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -124,23 +185,15 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Accuracy Check
     if accuracy is not None and accuracy > 25:
         await update.message.reply_text(
-            f"⚠️ <b>Low GPS Accuracy detected ({accuracy:.1f}m).</b>\n"
-            "We need precise location (within 20m) for the officer.\n\n"
-            "Please wait a few seconds for your GPS to stabilize and <b>Share Location again</b>.",
+            f"⚠️ <b>Low GPS Accuracy detected ({accuracy:.1f}m).</b>\nWait for GPS to lock and <b>Share Location again</b>.",
             parse_mode='HTML'
         )
-        # Keep them in the LOCATION state to try again
         return LOCATION
 
-    # Retrieve previous analysis
-    analysis_result = context.user_data.get('analysis', 'No Analysis Data')
-    
-    # Logic to parse category
-    category = "Other"
-    if "Pothole" in analysis_result: category = "Roads"
-    elif "Garbage" in analysis_result: category = "Sanitation"
-    elif "Streetlight" in analysis_result: category = "Electricity"
-    elif "Water" in analysis_result: category = "Water"
+    # Retrieve valid analysis
+    analysis = context.user_data.get('analysis', {})
+    category = analysis.get('category', 'Other')
+    severity = analysis.get('severity', 'Medium')
     
     assigned_officer = OFFICER_CONTACTS.get(category, "General_Admin")
     map_link = f"https://www.google.com/maps?q={lat},{lon}"
@@ -148,6 +201,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     response_text = (
         f"✅ <b>Ticket Registered Successfully!</b>\n\n"
         f"📂 <b>Category:</b> {category}\n"
+        f"⚠️ <b>Severity:</b> {severity}\n"
         f"👮 <b>Assigned To:</b> {assigned_officer}\n"
         f"📍 <b>Location:</b> <a href='{map_link}'>View on Map</a>\n"
         f"🎯 <b>Accuracy:</b> {accuracy}m\n"
@@ -155,7 +209,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"<i>We have notified the designated officer.</i>"
     )
     
-    await update.message.reply_html(response_text, reply_markup=None) # Remove keyboard
+    await update.message.reply_html(response_text, reply_markup=None)
     
     return ConversationHandler.END
 
