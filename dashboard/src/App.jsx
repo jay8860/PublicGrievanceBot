@@ -249,10 +249,13 @@ function App() {
                                 <table className="w-full text-sm text-left text-gray-500">
                                     <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b">
                                         <tr>
+                                            <th className="px-6 py-3">Photo</th>
                                             <th className="px-6 py-3">ID</th>
                                             <th className="px-6 py-3">Date</th>
                                             <th className="px-6 py-3">Category</th>
                                             <th className="px-6 py-3">Assigned To</th>
+                                            <th className="px-6 py-3">Rating</th>
+                                            <th className="px-6 py-3">Chat ID</th>
                                             <th className="px-6 py-3">Status</th>
                                             <th className="px-6 py-3">Actions</th>
                                         </tr>
@@ -262,8 +265,24 @@ function App() {
                                             const escalation = getEscalationStatus(row);
                                             return (
                                                 <tr key={i} className={`bg-white border-b hover:bg-gray-50 ${escalation?.isEscalated ? 'bg-red-50' : ''}`}>
+                                                    <td className="px-6 py-4">
+                                                        {row['PhotoID'] && row['PhotoID'] !== 'N/A' ? (
+                                                            <div className="h-10 w-10">
+                                                                <img
+                                                                    src={`${API_BASE}/image/${row['PhotoID']}`}
+                                                                    alt="Thumb"
+                                                                    className="h-full w-full rounded object-cover border border-gray-200"
+                                                                    loading="lazy"
+                                                                />
+                                                            </div>
+                                                        ) : (
+                                                            <div className="h-10 w-10 bg-gray-100 rounded flex items-center justify-center text-gray-300">
+                                                                <span className="text-xs">No Img</span>
+                                                            </div>
+                                                        )}
+                                                    </td>
                                                     <td className="px-6 py-4 font-medium text-gray-900">{row['Ticket ID']}</td>
-                                                    <td className="px-6 py-4">{row['Timestamp']}</td>
+                                                    <td className="px-6 py-4 text-xs text-gray-500">{new Date(row['Timestamp']).toLocaleDateString()}</td>
                                                     <td className="px-6 py-4">
                                                         <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded border border-blue-400">
                                                             {row['Category']}
@@ -276,6 +295,12 @@ function App() {
                                                                 {escalation.message}
                                                             </div>
                                                         )}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-yellow-500 font-bold">
+                                                        {row['User Rating'] ? `⭐ ${row['User Rating']}` : '-'}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-xs text-gray-500">
+                                                        {row['Chat ID'] || row['citizen_chat_id'] || '-'}
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <span className={`text-xs font-medium px-2.5 py-0.5 rounded border ${row['Status'] === 'Resolved' ? 'bg-green-100 text-green-800 border-green-400' :
