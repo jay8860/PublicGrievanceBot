@@ -19,7 +19,8 @@ let DefaultIcon = L.icon({
 L.Marker.prototype.options.icon = DefaultIcon;
 
 // --- CONSTANTS ---
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+// In production, we are served by the same backend, so use relative path
+const API_BASE = import.meta.env.PROD ? '/api' : (import.meta.env.VITE_API_URL || 'http://localhost:8000/api');
 
 function App() {
     const [view, setView] = useState('dashboard'); // dashboard, map, list
@@ -215,14 +216,14 @@ function App() {
                                                 <td className="px-6 py-4 max-w-xs truncate" title={row['Description']}>{row['Description']}</td>
                                                 <td className="px-6 py-4">
                                                     <span className={`text-xs font-medium px-2.5 py-0.5 rounded border ${row['Severity'] === 'High' ? 'bg-red-100 text-red-800 border-red-400' :
-                                                            'bg-yellow-100 text-yellow-800 border-yellow-400'
+                                                        'bg-yellow-100 text-yellow-800 border-yellow-400'
                                                         }`}>
                                                         {row['Severity']}
                                                     </span>
                                                 </td>
                                                 <td className="px-6 py-4">
                                                     <span className={`text-xs font-medium px-2.5 py-0.5 rounded border ${row['Status'] === 'Resolved' ? 'bg-green-100 text-green-800 border-green-400' :
-                                                            'bg-gray-100 text-gray-800 border-gray-400'
+                                                        'bg-gray-100 text-gray-800 border-gray-400'
                                                         }`}>
                                                         {row['Status']}
                                                     </span>
