@@ -102,7 +102,15 @@ async def analyze_image_with_bouncer(image_bytes):
         - Return "is_valid": false if rejected by either check.
 
         Phase 2: ANALYSIS (If Valid)
-        - Identify Category: [Roads, Sanitation, Electricity, Water, Other] (Map Pothole->Roads, Garbage->Sanitation etc)
+        - Identify Category: ['Sanitation', 'Drainage', 'Water Supply', 'Road Infra', 'Lighting', 'Fire', 'Other']
+        - Map strictly:
+          * Garbage/Trash -> Sanitation
+          * Pothole/Broken Road -> Road Infra
+          * Water Leak/Pipe Burst -> Water Supply
+          * Street Light -> Lighting
+          * Clogged Drain -> Drainage
+          * Fire Hazards -> Fire
+          * Else -> Other
         - Severity: [High, Medium, Low]
         - Description: 1 sentence summary.
 
