@@ -250,6 +250,7 @@ function App() {
                                     <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b">
                                         <tr>
                                             <th className="px-6 py-3">Photo</th>
+                                            <th className="px-6 py-3">Resolution</th>
                                             <th className="px-6 py-3">ID</th>
                                             <th className="px-6 py-3">Date</th>
                                             <th className="px-6 py-3">Category</th>
@@ -279,6 +280,20 @@ function App() {
                                                             <div className="h-10 w-10 bg-gray-100 rounded flex items-center justify-center text-gray-300">
                                                                 <span className="text-xs">No Img</span>
                                                             </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        {row['After File ID'] && row['After File ID'] !== 'N/A' && row['After File ID'] !== '' ? (
+                                                            <div className="h-10 w-10">
+                                                                <img
+                                                                    src={`${API_BASE}/image/${row['After File ID']}`}
+                                                                    alt="Resolved"
+                                                                    className="h-full w-full rounded object-cover border border-green-200 ring-1 ring-green-400"
+                                                                    loading="lazy"
+                                                                />
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-gray-300 text-xs">-</span>
                                                         )}
                                                     </td>
                                                     <td className="px-6 py-4 font-medium text-gray-900">{row['Ticket ID']}</td>
