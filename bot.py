@@ -14,11 +14,13 @@ import json
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8577255418:AAF2h6C0ICMs4IuaweH_5OnSNyWOxYCKQQ4")
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+TEST_OFFICER_CHAT_ID = 579438947 # Hardcoded for Testing
+TEST_MODE = True
 
 # --- TRIAGE CONFIG ---
-MAX_REPORTS_PER_HOUR = 100 # Increased for testing
-RATE_LIMIT_STORE = {} # {user_id: [timestamp1, timestamp2]}
-DUPLICATE_HASHES = set() # Store MD5 hashes of processed images (In-memory for demo)
+MAX_REPORTS_PER_HOUR = 100 
+RATE_LIMIT_STORE = {} 
+DUPLICATE_HASHES = set() 
 
 # Configure Logging
 logging.basicConfig(
@@ -245,6 +247,20 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Run in background so it doesn't block the bot
     asyncio.create_task(asyncio.to_thread(log_ticket, ticket_data))
     
+    # --- NOTIFY OFFICER (Test Mode) ---
+    if TEST_MODE and TEST_OFFICER_CHAT_ID:
+        try:
+            officer_msg = (
+                f"🚨 <b>New Grievance Assigned!</b>\n"
+                f"🎫 <b>Ticket:</b> #{ticket_id}\n"
+                f"📂 <b>Category:</b> {category}\n"
+                f"📝 <b>Desc:</b> {description}\n\n"
+                f"👉 <b>Action:</b> Reply to this message with a <b>PHOTO</b> to mark as RESOLVED."
+            )
+            await context.bot.send_message(chat_id=TEST_OFFICER_CHAT_ID, text=officer_msg, parse_mode='HTML')
+        except Exception as e:
+            logging.error(f"Failed to notify officer: {e}")
+
     response_text = (
         f"✅ <b>Ticket Registered Successfully!</b>\n\n"
         f"📂 <b>Category:</b> {category}\n"
@@ -259,6 +275,49 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_html(response_text, reply_markup=None)
     
     return ConversationHandler.END
+
+async def handle_officer_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles Officer's Reply (Photo) to Close Ticket."""
+    msg = update.message
+    
+    # Check if this is a reply to a bot message
+    if not msg.reply_to_message:
+        return # Ignore normal photos if not in conversation
+
+    original_text = msg.reply_to_message.text or msg.reply_to_message.caption
+    if not original_text or "Ticket:" not in original_text:
+        return
+
+    # Extract Ticket ID
+    try:
+        # Expected: "...Ticket: #TKT-123..."
+        import re
+        match = re.search(r"Ticket:\s*#?(TKT-\d+)", original_text)
+        if not match:
+            await msg.reply_text("❌ Could not find Ticket ID in the message you replied to.")
+            return
+
+        ticket_id = match.group(1)
+        
+        # Get Photo
+        photo_file = await msg.photo[-1].get_file()
+        # In prod, upload to S3/Cloudinary. Here we just take file_path (only valid for 1h)
+        # For demo, we just acknowledge.
+        
+        from sheets import update_ticket_status
+        success = await asyncio.to_thread(update_ticket_status, ticket_id, "Resolved")
+        
+        if success:
+            await msg.reply_text(f"✅ <b>Ticket {ticket_id} Closed!</b>\nStatus updated to Resolved.", parse_mode='HTML')
+            
+            # Notify Citizen (Simulated - here Citizen is same as Officer in test)
+            # await context.bot.send_message(chat_id=citizen_id, ...) 
+        else:
+            await msg.reply_text("❌ Failed to update Sheet.")
+
+    except Exception as e:
+        logging.error(f"Reply Handler Error: {e}")
+        await msg.reply_text("❌ Error processing resolution.")
 
 # --- MAIN ---
 
@@ -285,6 +344,16 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", cmd_id)) # New ID Command
     application.add_handler(CommandHandler("help", help_command))
+    
+    # Officer Resolution Handler (Photo Reply) - Must be before ConversationHandler if possible, or added separately
+    # Since ConvHandler captures PHOTO, we need to be careful. 
+    # Current ConvHandler filters.PHOTO is entry point.
+    # If a user is NOT in conversation, this handler should catch it?
+    # Actually, ConvHandler has higher priority if added first? No, handlers are checked in order.
+    # We want Officer Reply to work independent of "Start Grievance".
+    # Strategy: Add Officer Handler BEFORE Conv Handler.
+    application.add_handler(MessageHandler(filters.PHOTO & filters.REPLY, handle_officer_reply), group=1)
+    
     application.add_handler(conv_handler)
 
     # Run the bot
