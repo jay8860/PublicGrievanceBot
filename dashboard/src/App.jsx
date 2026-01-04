@@ -132,33 +132,38 @@ function App() {
                                             );
                                         })}
                                     </tbody>
+                                </table >
+        { works.length === 0 && <div className="p-8 text-center text-gray-400">No records found.</div> }
+                            </div >
+                        )
+}
 
-    {/* MAP VIEW */ }
-    {
-        (view === 'map') && (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-[600px] relative">
-                <MapContainer center={[18.89, 81.35]} zoom={10} style={{ height: '100%', width: '100%' }}>
-                    <TileLayer
-                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    />
-                    {locations.map((loc, i) => (
-                        <Marker key={i} position={[loc.Lat, loc.Long]}>
-                            <Popup>
-                                <div className="p-2">
-                                    <h4 className="font-bold text-sm">{loc['Category']} - {loc['Ticket ID']}</h4>
-                                    <p className="text-xs text-gray-600 mt-1">{loc['Description']}</p>
-                                    <div className="mt-2 text-xs">
-                                        <span className="font-semibold">Status:</span> {loc['Status']}
-                                    </div>
+{/* MAP VIEW */ }
+{
+    (view === 'map') && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-[600px] relative">
+            <MapContainer center={[18.89, 81.35]} zoom={10} style={{ height: '100%', width: '100%' }}>
+                <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                {locations.map((loc, i) => (
+                    <Marker key={i} position={[loc.Lat, loc.Long]}>
+                        <Popup>
+                            <div className="p-2">
+                                <h4 className="font-bold text-sm">{loc['Category']} - {loc['Ticket ID']}</h4>
+                                <p className="text-xs text-gray-600 mt-1">{loc['Description']}</p>
+                                <div className="mt-2 text-xs">
+                                    <span className="font-semibold">Status:</span> {loc['Status']}
                                 </div>
-                            </Popup>
-                        </Marker>
-                    ))}
-                </MapContainer>
-            </div>
-        )
-    }
+                            </div>
+                        </Popup>
+                    </Marker>
+                ))}
+            </MapContainer>
+        </div>
+    )
+}
                     </>
                 )
 }
