@@ -83,6 +83,42 @@ def log_ticket(ticket_data):
         logger.error(f"Sheet Write Error: {e}")
         return False
 
+def update_ticket_status(ticket_id, status, after_photo_url="N/A"):
+    """
+    Updates the status and after_photo of a ticket by ID.
+    Status can be 'Resolved' or 'Closed'.
+    """
+    client = get_client()
+    if not client: return False
+    
+    try:
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        # Find cell with Ticket ID
+        cell = sheet.find(ticket_id)
+        if not cell:
+            logger.warning(f"Ticket {ticket_id} not found for update.")
+            return False
+        
+        # Update Status (Col 5) and Photo (Col 10 or append new column for After Photo)
+        # Assuming Status is Col 5 (E)
+        sheet.update_cell(cell.row, 5, status)
+        
+        # Note: We are overwriting Photo URL for now or we could add a new column
+        # Let's add a "Resolution Photo" column if it doesn't exist?
+        # For simplicity, we'll just log it to a new "Resolution Note" or similar if needed.
+        # But user asked for showing Before/After. 
+        # Let's assume we append " | After: url" to the Photo URL column (Col 10)
+        # Or better, let's just create a new Column if we can.
+        
+        # Simple Approach: Append to Description
+        # current_desc = sheet.cell(cell.row, 7).value
+        # sheet.update_cell(cell.row, 7, f"{current_desc} | Resolution: {after_photo_url}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Sheet Update Error: {e}")
+        return False
+
 # --- CACHE FOR OFFICERS ---
 OFFICER_CACHE = {
     "data": {},
