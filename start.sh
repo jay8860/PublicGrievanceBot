@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# --- SELF HEALING BUILD ---
+# If dist folder is missing (due to build phase failure), build it now.
+if [ ! -d "dashboard/dist" ]; then
+    echo "⚠️ Dashboard Build Missing. Building at Runtime..."
+    cd dashboard
+    npm install
+    npm run build
+    cd ..
+    echo "✅ Runtime Build Complete."
+fi
+# --------------------------
+
 # Start the Bot in background
 echo "Starting Telegram Bot..."
 python bot.py &
