@@ -203,9 +203,27 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     analysis = context.user_data.get('analysis', {})
     category = analysis.get('category', 'Other')
     severity = analysis.get('severity', 'Medium')
+    description = analysis.get('description', 'No description available.')
     
     assigned_officer = OFFICER_CONTACTS.get(category, "General_Admin")
     map_link = f"https://www.google.com/maps?q={lat},{lon}"
+    ticket_id = f"TKT-{update.message.message_id}"
+    
+    # --- LOG TO SHEETS ---
+    from sheets import log_ticket # Lazy import to avoid circular dependency if any
+    ticket_data = {
+        "ticket_id": ticket_id,
+        "category": category,
+        "severity": severity,
+        "description": description,
+        "lat": lat,
+        "long": lon,
+        "officer": assigned_officer,
+        "photo_url": "N/A", # Telegram URLs expire, requires more logic to host. Using N/A for now.
+        "map_link": map_link
+    }
+    # Run in background so it doesn't block the bot
+    asyncio.create_task(asyncio.to_thread(log_ticket, ticket_data))
     
     response_text = (
         f"✅ <b>Ticket Registered Successfully!</b>\n\n"
@@ -214,7 +232,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"👮 <b>Assigned To:</b> {assigned_officer}\n"
         f"📍 <b>Location:</b> <a href='{map_link}'>View on Map</a>\n"
         f"🎯 <b>Accuracy:</b> {accuracy}m\n"
-        f"🎫 <b>Ticket ID:</b> #TKT-{update.message.message_id}\n\n"
+        f"🎫 <b>Ticket ID:</b> #{ticket_id}\n\n"
         f"<i>We have notified the designated officer.</i>"
     )
     
