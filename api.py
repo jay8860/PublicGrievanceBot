@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 import pandas as pd
 from sheets import get_client, SHEET_URL
 from datetime import datetime, timedelta
@@ -9,11 +10,19 @@ import logging
 import asyncio
 import os
 
+# Auth Imports
+from auth import verify_admin, create_access_token, verify_password
+
 # --- CONFIG ---
 CACHE_DURATION_SECONDS = 60 # Cache data for 1 minute
 CACHE = {"data": None, "timestamp": None}
 
 app = FastAPI(title="Grievance Monitoring API")
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 
 # CORS
 app.add_middleware(
@@ -91,6 +100,16 @@ def get_cached_dataframe():
         raise e
 
 # --- ENDPOINTS ---
+
+@app.post("/api/login")
+def login(creds: LoginRequest):
+    if verify_admin(creds.username, creds.password):
+        # Generate Token
+        access_token = create_access_token(data={"sub": creds.username})
+        return {"access_token": access_token, "token_type": "bearer"}
+    else:
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+
 
 @app.get("/api/debug_auth")
 def debug_auth():

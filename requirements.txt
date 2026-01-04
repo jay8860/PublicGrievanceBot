@@ -7,3 +7,6 @@ fastapi
 uvicorn
 pandas
 openpyxl
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
