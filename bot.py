@@ -203,12 +203,16 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     description = analysis.get('description', 'No description available.')
     
     # Dynamic Officer Lookup
-    from sheets import get_officer_map, log_ticket
-    officer_map = get_officer_map()
-    
-    # Default to General Admin if category not found or officer not set
-    category_data = officer_map.get(category, {})
-    assigned_officer = category_data.get("L1", "General_Admin")
+    try:
+        from sheets import get_officer_map, log_ticket
+        officer_map = get_officer_map()
+        
+        # Default to General Admin if category not found or officer not set
+        category_data = officer_map.get(category, {})
+        assigned_officer = category_data.get("L1", "General_Admin")
+    except Exception as e:
+        logging.error(f"Officer Lookup Failed: {e}")
+        assigned_officer = "General_Admin (Fallback)"
     
     map_link = f"https://www.google.com/maps?q={lat},{lon}"
     ticket_id = f"TKT-{update.message.message_id}"
