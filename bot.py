@@ -152,6 +152,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         
+        # Store File ID for later use (Sending to Officer)
+        context.user_data['photo_file_id'] = photo_file.file_id
+        
         # Check 2: Duplicate Detection
         img_hash = get_image_hash(photo_bytes)
         if img_hash in DUPLICATE_HASHES:
@@ -209,20 +212,17 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return LOCATION
 
-    # Retrieve valid analysis
     analysis = context.user_data.get('analysis', {})
+    photo_file_id = context.user_data.get('photo_file_id') # From handle_photo
     category = analysis.get('category', 'Other')
     severity = analysis.get('severity', 'Medium')
-    description = analysis.get('description', 'No description available.')
-    
     description = analysis.get('description', 'No description available.')
     
     # Dynamic Officer Lookup
     try:
         from sheets import get_officer_map, log_ticket
         officer_map = get_officer_map()
-        
-        # Default to General Admin if category not found or officer not set
+        # ... (Officer Lookup Logic Same)
         category_data = officer_map.get(category, {})
         assigned_officer = category_data.get("L1", "General_Admin")
     except Exception as e:
@@ -241,8 +241,10 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "lat": lat,
         "long": lon,
         "officer": assigned_officer,
-        "photo_url": "N/A", # Telegram URLs expire, requires more logic to host. Using N/A for now.
-        "map_link": map_link
+        "photo_url": "N/A",
+        "map_link": map_link,
+        "citizen_chat_id": update.effective_chat.id, # New: Store Citizen ID
+        "photo_file_id": photo_file_id # New: Store File ID for resending
     }
     # Run in background so it doesn't block the bot
     asyncio.create_task(asyncio.to_thread(log_ticket, ticket_data))
@@ -257,7 +259,12 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"📝 <b>Desc:</b> {description}\n\n"
                 f"👉 <b>Action:</b> Reply to this message with a <b>PHOTO</b> to mark as RESOLVED."
             )
-            await context.bot.send_message(chat_id=TEST_OFFICER_CHAT_ID, text=officer_msg, parse_mode='HTML')
+            # Send PHOTO + Caption
+            if photo_file_id:
+                await context.bot.send_photo(chat_id=TEST_OFFICER_CHAT_ID, photo=photo_file_id, caption=officer_msg, parse_mode='HTML')
+            else:
+                await context.bot.send_message(chat_id=TEST_OFFICER_CHAT_ID, text=officer_msg, parse_mode='HTML')
+                
         except Exception as e:
             logging.error(f"Failed to notify officer: {e}")
 
@@ -299,25 +306,80 @@ async def handle_officer_reply(update: Update, context: ContextTypes.DEFAULT_TYP
 
         ticket_id = match.group(1)
         
-        # Get Photo
+        # Get Photo from Officer (After Photo)
         photo_file = await msg.photo[-1].get_file()
-        # In prod, upload to S3/Cloudinary. Here we just take file_path (only valid for 1h)
-        # For demo, we just acknowledge.
+        after_file_id = photo_file.file_id
         
-        from sheets import update_ticket_status
-        success = await asyncio.to_thread(update_ticket_status, ticket_id, "Resolved")
+        from sheets import update_ticket_status, get_ticket_meta
+        success = await asyncio.to_thread(update_ticket_status, ticket_id, "Resolved", after_file_id)
         
         if success:
             await msg.reply_text(f"✅ <b>Ticket {ticket_id} Closed!</b>\nStatus updated to Resolved.", parse_mode='HTML')
             
-            # Notify Citizen (Simulated - here Citizen is same as Officer in test)
-            # await context.bot.send_message(chat_id=citizen_id, ...) 
+            # --- NOTIFY CITIZEN WITH VISUAL PROOF ---
+            meta = await asyncio.to_thread(get_ticket_meta, ticket_id)
+            if meta and meta.get("citizen_chat_id"):
+                citizen_id = meta["citizen_chat_id"]
+                before_file_id = meta.get("photo_file_id")
+                
+                try:
+                    # 1. Send Visual Proof (Before & After)
+                    from telegram import InputMediaPhoto
+                    media = []
+                    if before_file_id:
+                        media.append(InputMediaPhoto(media=before_file_id, caption="BEFORE"))
+                    media.append(InputMediaPhoto(media=after_file_id, caption="AFTER (Resolved)"))
+                    
+                    await context.bot.send_media_group(chat_id=citizen_id, media=media)
+                    
+                    # 2. Ask for Rating
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("⭐ 1", callback_data=f"rate_{ticket_id}_1"),
+                            InlineKeyboardButton("⭐ 2", callback_data=f"rate_{ticket_id}_2"),
+                            InlineKeyboardButton("⭐ 3", callback_data=f"rate_{ticket_id}_3"),
+                        ],
+                        [
+                            InlineKeyboardButton("⭐ 4", callback_data=f"rate_{ticket_id}_4"),
+                            InlineKeyboardButton("⭐ 5", callback_data=f"rate_{ticket_id}_5"),
+                        ]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    await context.bot.send_message(
+                        chat_id=citizen_id,
+                        text=f"✅ <b>Ticket #{ticket_id} Resolved!</b>\n\nYour grievance has been attended to.\nPlease rate the resolution quality:",
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logging.error(f"Failed to notify citizen: {e}")
+
         else:
             await msg.reply_text("❌ Failed to update Sheet.")
 
     except Exception as e:
         logging.error(f"Reply Handler Error: {e}")
         await msg.reply_text("❌ Error processing resolution.")
+
+async def handle_rating_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles Rating Button Clicks."""
+    query = update.callback_query
+    await query.answer() # Ack
+    
+    data = query.data
+    # data format: rate_{ticket_id}_{score}
+    try:
+        _, ticket_id, score = data.split('_')
+        
+        from sheets import update_ticket_rating
+        await asyncio.to_thread(update_ticket_rating, ticket_id, score)
+        
+        await query.edit_message_text(f"🌟 <b>Thank you for rating us {score} Stars!</b>", parse_mode='HTML')
+        
+    except Exception as e:
+        logging.error(f"Rating Error: {e}")
 
 # --- MAIN ---
 
@@ -353,6 +415,10 @@ def main() -> None:
     # We want Officer Reply to work independent of "Start Grievance".
     # Strategy: Add Officer Handler BEFORE Conv Handler.
     application.add_handler(MessageHandler(filters.PHOTO & filters.REPLY, handle_officer_reply), group=1)
+    
+    # Rating Handler
+    from telegram.ext import CallbackQueryHandler
+    application.add_handler(CallbackQueryHandler(handle_rating_callback, pattern="^rate_"))
     
     application.add_handler(conv_handler)
 
