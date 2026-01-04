@@ -221,3 +221,40 @@ def get_locations():
         }
         for _, row in valid_geo.iterrows()
     ]
+
+# --- IMAGE PROXY ---
+import requests
+from bot import TELEGRAM_BOT_TOKEN # Reuse token
+
+@app.get("/api/image/{file_id}")
+def get_telegram_image(file_id: str):
+    """Proxies image from Telegram to avoid CORS and Token exposure."""
+    if not file_id or file_id == "N/A":
+        return JSONResponse({"error": "No ID"}, status_code=404)
+        
+    try:
+        # 1. Get File Path
+        # https://api.telegram.org/bot<token>/getFile?file_id=<file_id>
+        info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+        resp = requests.get(info_url, timeout=5)
+        if resp.status_code != 200:
+            return JSONResponse({"error": "Telegram API Error"}, status_code=502)
+            
+        data = resp.json()
+        if not data.get("ok"):
+             return JSONResponse({"error": "Invalid File ID"}, status_code=404)
+             
+        file_path = data["result"]["file_path"]
+        
+        # 2. Get File Content
+        # https://api.telegram.org/file/bot<token>/<file_path>
+        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+        img_resp = requests.get(download_url, stream=True, timeout=10)
+        
+        # 3. Stream back
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(img_resp.iter_content(chunk_size=1024), media_type=img_resp.headers.get("Content-Type", "image/jpeg"))
+
+    except Exception as e:
+        logger.error(f"Image Proxy Error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
