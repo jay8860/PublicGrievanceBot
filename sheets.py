@@ -72,7 +72,9 @@ def log_ticket(ticket_data):
             ticket_data.get("long"),
             ticket_data.get("photo_url", "N/A"),
             ticket_data.get("map_link"),
-            "Validated" # Default Integrity
+            "Validated", # Default Integrity
+            ticket_data.get("citizen_chat_id", ""), # Col 13
+            ticket_data.get("photo_file_id", "")  # Col 14
         ]
         
         sheet.append_row(row)
@@ -117,6 +119,44 @@ def update_ticket_status(ticket_id, status, after_photo_url="N/A"):
         return True
     except Exception as e:
         logger.error(f"Sheet Update Error: {e}")
+        return False
+
+def get_ticket_meta(ticket_id):
+    """Fetches Citizen Chat ID and Photo File ID for a ticket."""
+    client = get_client()
+    if not client: return None
+    try:
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        cell = sheet.find(ticket_id)
+        if not cell: return None
+        
+        row_values = sheet.row_values(cell.row)
+        # Assuming Col 13 is Citizen ID, Col 14 is Photo ID
+        # Safety check for list index
+        citizen_id = row_values[12] if len(row_values) > 12 else None
+        photo_id = row_values[13] if len(row_values) > 13 else None
+        
+        return {
+            "citizen_chat_id": citizen_id,
+            "photo_file_id": photo_id
+        }
+    except Exception as e:
+        logger.error(f"Meta Fetch Error: {e}")
+        return None
+
+def update_ticket_rating(ticket_id, rating):
+    """Updates the rating (Col 16)."""
+    client = get_client()
+    if not client: return False
+    try:
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        cell = sheet.find(ticket_id)
+        if not cell: return False
+        
+        sheet.update_cell(cell.row, 16, rating) # Col 16
+        return True
+    except Exception as e:
+        logger.error(f"Rating Update Error: {e}")
         return False
 
 # --- CACHE FOR OFFICERS ---
