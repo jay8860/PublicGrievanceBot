@@ -236,7 +236,10 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
         states={
-            LOCATION: [MessageHandler(filters.LOCATION, handle_location)],
+            LOCATION: [
+                MessageHandler(filters.LOCATION, handle_location),
+                MessageHandler(filters.PHOTO, handle_photo) # Allow restarting with new photo
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
