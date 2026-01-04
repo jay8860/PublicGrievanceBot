@@ -30,6 +30,15 @@ function App() {
     const [filters, setFilters] = useState({});
     const [works, setWorks] = useState([]);
     const [locations, setLocations] = useState([]);
+    const [loading, setLoading] = useState(false);
+
+    // Filter States
+    const [selectedCategory, setSelectedCategory] = useState('');
+    const [selectedStatus, setSelectedStatus] = useState('');
+    const [selectedSeverity, setSelectedSeverity] = useState('');
+    const [search, setSearch] = useState('');
+
+    // Officer Map
     const [officerMap, setOfficerMap] = useState({});
 
     // --- EFFECTS ---
@@ -50,7 +59,24 @@ function App() {
         }
     }, [token]);
 
-    // ... (Filter Effect) ...
+    // Re-fetch when filters change
+    useEffect(() => {
+        fetchData();
+    }, [selectedCategory, selectedStatus, selectedSeverity, search]);
+
+    const fetchStats = async () => {
+        try {
+            const res = await axios.get(`${API_BASE}/stats`);
+            setStats(res.data);
+        } catch (e) { console.error("Stats Error", e); }
+    };
+
+    const fetchFilters = async () => {
+        try {
+            const res = await axios.get(`${API_BASE}/filters`);
+            setFilters(res.data);
+        } catch (e) { console.error("Filters Error", e); }
+    };
 
     const fetchOfficerMap = async () => {
         try {
@@ -59,7 +85,31 @@ function App() {
         } catch (e) { console.error("Officer Map Error", e); }
     };
 
-    // ... (Other fetch functions) ...
+    const fetchData = async () => {
+        setLoading(true);
+        try {
+            const params = {
+                category: selectedCategory || undefined,
+                status: selectedStatus || undefined,
+                severity: selectedSeverity || undefined,
+                search: search || undefined
+            };
+
+            const worksRes = await axios.get(`${API_BASE}/works`, { params });
+            setWorks(worksRes.data);
+
+            // For map, we use the same filtered dataset for consistency
+            setLocations(worksRes.data.filter(w => w.Lat && w.Long));
+
+        } catch (e) { console.error("Data Error", e); }
+        setLoading(false);
+    };
+
+    // --- HELPERS ---
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        setToken(null);
+    };
 
     // Helper to calculate Escalation
     const getEscalationStatus = (ticket) => {
@@ -86,8 +136,117 @@ function App() {
         }
     };
 
-   // ... (Render) ...
+    // --- COMPONENTS ---
 
+    const StatCard = ({ title, value, color }) => (
+        <div className={`p-4 rounded-xl shadow-sm border border-gray-100 bg-white`}>
+            <p className="text-gray-500 text-sm font-medium">{title}</p>
+            <h3 className={`text-2xl font-bold mt-1`} style={{ color: color }}>{value}</h3>
+        </div>
+    );
+
+    // --- AUTH GUARD ---
+    if (!token) {
+        return <Login onLogin={setToken} />;
+    }
+
+    return (
+        <div className="min-h-screen bg-gray-50 font-sans text-gray-800">
+
+            {/* HEADER */}
+            <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
+                <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-blue-600 text-white p-2 rounded-lg">
+                            <LayoutDashboard size={20} />
+                        </div>
+                        <h1 className="text-xl font-bold text-gray-900">Grievance Monitor</h1>
+                    </div>
+
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setView('map')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${view === 'map' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
+                        >
+                            <div className="flex items-center gap-2"><MapIcon size={16} /> Map</div>
+                        </button>
+                        <button
+                            onClick={() => setView('list')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${view === 'list' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
+                        >
+                            <div className="flex items-center gap-2"><TableIcon size={16} /> List</div>
+                        </button>
+                        <button onClick={fetchData} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Refresh Data">
+                            <RefreshCcw size={18} />
+                        </button>
+                        <div className="h-6 w-px bg-gray-300 mx-1 self-center"></div>
+                        <button onClick={handleLogout} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Logout">
+                            <LogOut size={18} />
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <main className="max-w-7xl mx-auto px-4 py-8">
+
+                {/* STATS ROW */}
+                {stats && (
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                        <StatCard title="Total Grievances" value={stats.total} color="#1f2937" />
+                        <StatCard title="Open Issues" value={stats.open} color="#dc2626" />
+                        <StatCard title="Resolved" value={stats.resolved} color="#16a34a" />
+                        <StatCard title="Sanitation Issues" value={stats.breakdown['Sanitation'] || 0} color="#ea580c" />
+                    </div>
+                )}
+
+                {/* FILTERS TOOLBAR */}
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-wrap gap-4 items-center">
+                    <div className="flex items-center gap-2 text-gray-500 mr-2">
+                        <Filter size={18} />
+                        <span className="text-sm font-medium">Filters:</span>
+                    </div>
+
+                    <select
+                        className="bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5 focus:ring-blue-500 focus:border-blue-500"
+                        value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}
+                    >
+                        <option value="">All Categories</option>
+                        {filters.categories?.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+
+                    <select
+                        className="bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5 focus:ring-blue-500 focus:border-blue-500"
+                        value={selectedStatus} onChange={e => setSelectedStatus(e.target.value)}
+                    >
+                        <option value="">All Statuses</option>
+                        {filters.statuses?.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+
+                    <select
+                        className="bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5 focus:ring-blue-500 focus:border-blue-500"
+                        value={selectedSeverity} onChange={e => setSelectedSeverity(e.target.value)}
+                    >
+                        <option value="">All Severities</option>
+                        {filters.severities?.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+
+                    <input
+                        type="text"
+                        placeholder="Search ID or Description..."
+                        className="bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5 ml-auto w-64"
+                        value={search} onChange={e => setSearch(e.target.value)}
+                    />
+                </div>
+
+                {/* VIEWS */}
+                {loading ? (
+                    <div className="text-center py-20 text-gray-500">Loading data...</div>
+                ) : (
+                    <>
+                        {/* LIST VIEW */}
+                        {view === 'list' && (
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                                <table className="w-full text-sm text-left text-gray-500">
                                     <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b">
                                         <tr>
                                             <th className="px-6 py-3">ID</th>
@@ -132,45 +291,41 @@ function App() {
                                             );
                                         })}
                                     </tbody>
-                                </table >
-        { works.length === 0 && <div className="p-8 text-center text-gray-400">No records found.</div> }
-                            </div >
-                        )
-}
-
-{/* MAP VIEW */ }
-{
-    (view === 'map') && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-[600px] relative">
-            <MapContainer center={[18.89, 81.35]} zoom={10} style={{ height: '100%', width: '100%' }}>
-                <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                />
-                {locations.map((loc, i) => (
-                    <Marker key={i} position={[loc.Lat, loc.Long]}>
-                        <Popup>
-                            <div className="p-2">
-                                <h4 className="font-bold text-sm">{loc['Category']} - {loc['Ticket ID']}</h4>
-                                <p className="text-xs text-gray-600 mt-1">{loc['Description']}</p>
-                                <div className="mt-2 text-xs">
-                                    <span className="font-semibold">Status:</span> {loc['Status']}
-                                </div>
+                                </table>
+                                {works.length === 0 && <div className="p-8 text-center text-gray-400">No records found.</div>}
                             </div>
-                        </Popup>
-                    </Marker>
-                ))}
-            </MapContainer>
+                        )}
+
+                        {/* MAP VIEW */}
+                        {(view === 'map') && (
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-[600px] relative">
+                                <MapContainer center={[18.89, 81.35]} zoom={10} style={{ height: '100%', width: '100%' }}>
+                                    <TileLayer
+                                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                                    />
+                                    {locations.map((loc, i) => (
+                                        <Marker key={i} position={[loc.Lat, loc.Long]}>
+                                            <Popup>
+                                                <div className="p-2">
+                                                    <h4 className="font-bold text-sm">{loc['Category']} - {loc['Ticket ID']}</h4>
+                                                    <p className="text-xs text-gray-600 mt-1">{loc['Description']}</p>
+                                                    <div className="mt-2 text-xs">
+                                                        <span className="font-semibold">Status:</span> {loc['Status']}
+                                                    </div>
+                                                </div>
+                                            </Popup>
+                                        </Marker>
+                                    ))}
+                                </MapContainer>
+                            </div>
+                        )}
+                    </>
+                )}
+
+            </main>
         </div>
     )
 }
-                    </>
-                )
-}
 
-            </main >
-        </div >
-    )
-}
-
-export default App
+export default App;
