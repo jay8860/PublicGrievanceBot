@@ -92,10 +92,19 @@ async def analyze_image_with_bouncer(image_bytes):
         prompt = """
         Analyze this image strictly for a Public Grievance System.
         
-        Phase 1: RELEVANCE CHECK (The Bouncer)
-        - Is this a photo of a public infrastructure issue (pothole, garbage, broken light, water leak)?
-        - REJECT IF: Selfie, meme, screenshot, text document, blurry/unclear, indoor residential, or unrelated object.
-        - Return "is_valid": false if rejected.
+        Phase 1: FORENSIC & RELEVANCE CHECK (The Bouncer)
+        
+        1. ANTI-SPOOFING CHECK (Digital Screen Detection):
+           - Look closely for **Moiré patterns** (wavy interference lines typical when photographing screens).
+           - Look for **visible pixel grids** or RGB sub-pixels.
+           - Look for **Screen Bezels**, monitor frames, or laptop edges bordering the image.
+           - IF ANY OF ABOVE FOUND -> REJECT immediately. Reason: "Photo of a digital screen detected."
+
+        2. CONTENT RELEVANCE CHECK:
+           - Is this a REAL LIFE photo of a public infrastructure issue (pothole, garbage, broken light, water leak)?
+           - REJECT IF: Selfie, meme, screenshot, text document, blurry/unclear, indoor residential, or unrelated object.
+        
+        - Return "is_valid": false if rejected by either check.
 
         Phase 2: ANALYSIS (If Valid)
         - Identify Category: [Roads, Sanitation, Electricity, Water, Other] (Map Pothole->Roads, Garbage->Sanitation etc)
