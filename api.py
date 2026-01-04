@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import pandas as pd
-from sheets import get_client, SHEET_URL
+from sheets import get_client, SHEET_URL, get_officer_map
 from datetime import datetime, timedelta
 import logging
 import asyncio
@@ -167,6 +167,11 @@ def get_filters():
         "statuses": get_unique("Status"),
         "officers": get_unique("Officer")
     }
+
+@app.get("/api/officers")
+def get_officer_details():
+    """Returns the Officer Map (SLA, L1, L2 for each Category)."""
+    return get_officer_map()
 
 @app.get("/api/works") # Keeping name 'works' to match frontend, or 'grievances'
 def get_grievances(
