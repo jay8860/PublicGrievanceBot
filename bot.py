@@ -34,13 +34,8 @@ model = genai.GenerativeModel('gemini-flash-latest')
 LOCATION = 1
 
 # --- MOCK DATABASE & OFFICERS ---
-OFFICER_CONTACTS = {
-    "Roads": "Officer_Sharma_Roads",
-    "Sanitation": "Officer_Verma_Sanitation",
-    "Electricity": "Officer_Singh_Power",
-    "Water": "Officer_Gupta_Jal",
-    "Other": "General_Admin"
-}
+# --- MOCK DATABASE & OFFICERS ---
+# Officers are now fetched dynamically from Google Sheets
 
 # --- HELPERS: INTEGRITY CHECKS ---
 
@@ -205,12 +200,20 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     severity = analysis.get('severity', 'Medium')
     description = analysis.get('description', 'No description available.')
     
-    assigned_officer = OFFICER_CONTACTS.get(category, "General_Admin")
+    description = analysis.get('description', 'No description available.')
+    
+    # Dynamic Officer Lookup
+    from sheets import get_officer_map, log_ticket
+    officer_map = get_officer_map()
+    
+    # Default to General Admin if category not found or officer not set
+    category_data = officer_map.get(category, {})
+    assigned_officer = category_data.get("L1", "General_Admin")
+    
     map_link = f"https://www.google.com/maps?q={lat},{lon}"
     ticket_id = f"TKT-{update.message.message_id}"
     
     # --- LOG TO SHEETS ---
-    from sheets import log_ticket # Lazy import to avoid circular dependency if any
     ticket_data = {
         "ticket_id": ticket_id,
         "category": category,
