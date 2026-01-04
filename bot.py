@@ -56,6 +56,7 @@ def check_rate_limit(user_id: int) -> bool:
     RATE_LIMIT_STORE[user_id] = valid_history
     return True
 
+def get_image_hash(image_bytes: bytes) -> str:
     """Returns MD5 hash of image bytes for duplicate detection."""
     return hashlib.md5(image_bytes).hexdigest()
 
