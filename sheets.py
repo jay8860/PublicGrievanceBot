@@ -103,12 +103,21 @@ def update_ticket_status(ticket_id, status, after_photo_url="N/A"):
             logger.warning(f"Ticket {ticket_id} not found for update.")
             return False
         
+        # Batch Update for reliability
         # Update Status (Col 5)
-        sheet.update_cell(cell.row, 5, status)
-        
         # Update After Photo ID (Col 15)
+        
+        # We constructed the cell range manually to avoid fetching full row object
+        # R1C5 (Status) and R1C15 (AfterID). They are far apart, so batch update list is better.
+        
+        updates = [
+            {'range': gspread.utils.rowcol_to_a1(cell.row, 5), 'values': [[status]]},
+        ]
+        
         if after_photo_url and after_photo_url != "N/A":
-             sheet.update_cell(cell.row, 15, after_photo_url)
+            updates.append({'range': gspread.utils.rowcol_to_a1(cell.row, 15), 'values': [[after_photo_url]]})
+            
+        sheet.batch_update(updates)
 
         return True
     except Exception as e:

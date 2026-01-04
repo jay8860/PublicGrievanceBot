@@ -297,9 +297,9 @@ async def handle_officer_reply(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Extract Ticket ID
     try:
-        # Expected: "...Ticket: #TKT-123..."
+        # Expected: "...Ticket: #TKT-123..." OR "...Ticket ID: #TKT-123..."
         import re
-        match = re.search(r"Ticket:\s*#?(TKT-\d+)", original_text)
+        match = re.search(r"Ticket(?: ID)?:\s*#?(TKT-\d+)", original_text, re.IGNORECASE)
         if not match:
             await msg.reply_text("❌ Could not find Ticket ID in the message you replied to.")
             return
