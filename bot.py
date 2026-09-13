@@ -13,10 +13,17 @@ import json
 import requests
 
 # --- CONFIGURATION ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8577255418:AAF2h6C0ICMs4IuaweH_5OnSNyWOxYCKQQ4")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-TEST_OFFICER_CHAT_ID = 579438947 # Hardcoded for Testing
-TEST_MODE = True
+
+_default_officer_chat_id_raw = os.getenv("DEFAULT_OFFICER_CHAT_ID")
+try:
+    DEFAULT_OFFICER_CHAT_ID = int(_default_officer_chat_id_raw) if _default_officer_chat_id_raw else None
+except (ValueError, TypeError):
+    logging.warning(f"DEFAULT_OFFICER_CHAT_ID '{_default_officer_chat_id_raw}' is not a valid integer; ignoring.")
+    DEFAULT_OFFICER_CHAT_ID = None
+
+ENABLE_OFFICER_NOTIFICATIONS = os.getenv("ENABLE_OFFICER_NOTIFICATIONS", "true").lower() != "false"
 
 # --- TRIAGE CONFIG ---
 MAX_REPORTS_PER_HOUR = 100 
@@ -263,6 +270,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logging.error(f"Officer Lookup Failed: {e}")
         assigned_officer = "General_Admin (Fallback)"
+        category_data = {}
     
     map_link = f"https://www.google.com/maps?q={lat},{lon}"
     ticket_id = f"TKT-{update.message.message_id}"
@@ -293,8 +301,10 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Run in background so it doesn't block the bot
     asyncio.create_task(asyncio.to_thread(log_ticket, ticket_data))
     
-    # --- NOTIFY OFFICER (Test Mode) ---
-    if TEST_MODE and TEST_OFFICER_CHAT_ID:
+    # --- NOTIFY OFFICER ---
+    notify_chat_id = category_data.get("L1_ChatID") or DEFAULT_OFFICER_CHAT_ID
+
+    if ENABLE_OFFICER_NOTIFICATIONS and notify_chat_id:
         try:
             officer_msg = (
                 f"🚨 <b>New Grievance Assigned!</b>\n"
@@ -306,12 +316,14 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             # Send PHOTO + Caption
             if photo_file_id:
-                await context.bot.send_photo(chat_id=TEST_OFFICER_CHAT_ID, photo=photo_file_id, caption=officer_msg, parse_mode='HTML')
+                await context.bot.send_photo(chat_id=notify_chat_id, photo=photo_file_id, caption=officer_msg, parse_mode='HTML')
             else:
-                await context.bot.send_message(chat_id=TEST_OFFICER_CHAT_ID, text=officer_msg, parse_mode='HTML')
-                
+                await context.bot.send_message(chat_id=notify_chat_id, text=officer_msg, parse_mode='HTML')
+
         except Exception as e:
             logging.error(f"Failed to notify officer: {e}")
+    elif ENABLE_OFFICER_NOTIFICATIONS:
+        logging.warning(f"No Telegram chat ID available for category '{category}' (officer: {assigned_officer}); notification skipped.")
 
     response_text = (
         f"✅ <b>Ticket Registered Successfully!</b>\n\n"
@@ -430,9 +442,9 @@ async def handle_rating_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 def main() -> None:
     """Start the bot."""
-    if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
-        print("ERROR: Please update the TELEGRAM_BOT_TOKEN in the script.")
-        return
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
+        logging.error("TELEGRAM_BOT_TOKEN is not set. Set the TELEGRAM_BOT_TOKEN environment variable before starting the bot.")
+        raise SystemExit("TELEGRAM_BOT_TOKEN environment variable is missing or invalid.")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 

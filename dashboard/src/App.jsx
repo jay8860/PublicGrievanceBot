@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { LayoutDashboard, Map as MapIcon, Table as TableIcon, Filter, RefreshCcw, LogOut } from 'lucide-react';
 import L from 'leaflet';
 import Login from './Login'; // Import Login
+import api from './api';
+import AuthImage from './AuthImage';
 
 // Fix Leaflet Icon
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -18,10 +19,6 @@ let DefaultIcon = L.icon({
     iconAnchor: [12, 41]
 });
 L.Marker.prototype.options.icon = DefaultIcon;
-
-// --- CONSTANTS ---
-// In production, we are served by the same backend, so use relative path
-const API_BASE = import.meta.env.PROD ? '/api' : (import.meta.env.VITE_API_URL || 'http://localhost:8000/api');
 
 function App() {
     const [token, setToken] = useState(localStorage.getItem('token') || null); // Auth State
@@ -66,21 +63,21 @@ function App() {
 
     const fetchStats = async () => {
         try {
-            const res = await axios.get(`${API_BASE}/stats`);
+            const res = await api.get('/stats');
             setStats(res.data);
         } catch (e) { console.error("Stats Error", e); }
     };
 
     const fetchFilters = async () => {
         try {
-            const res = await axios.get(`${API_BASE}/filters`);
+            const res = await api.get('/filters');
             setFilters(res.data);
         } catch (e) { console.error("Filters Error", e); }
     };
 
     const fetchOfficerMap = async () => {
         try {
-            const res = await axios.get(`${API_BASE}/officers`);
+            const res = await api.get('/officers');
             setOfficerMap(res.data);
         } catch (e) { console.error("Officer Map Error", e); }
     };
@@ -95,7 +92,7 @@ function App() {
                 search: search || undefined
             };
 
-            const worksRes = await axios.get(`${API_BASE}/works`, { params });
+            const worksRes = await api.get('/works', { params });
             setWorks(worksRes.data);
 
             // For map, we use the same filtered dataset for consistency
@@ -269,11 +266,10 @@ function App() {
                                                     <td className="px-6 py-4">
                                                         {row['PhotoID'] && row['PhotoID'] !== 'N/A' ? (
                                                             <div className="h-10 w-10">
-                                                                <img
-                                                                    src={`${API_BASE}/image/${row['PhotoID']}`}
+                                                                <AuthImage
+                                                                    src={`/image/${row['PhotoID']}`}
                                                                     alt="Thumb"
                                                                     className="h-full w-full rounded object-cover border border-gray-200"
-                                                                    loading="lazy"
                                                                 />
                                                             </div>
                                                         ) : (
@@ -285,11 +281,10 @@ function App() {
                                                     <td className="px-6 py-4">
                                                         {row['After File ID'] && row['After File ID'] !== 'N/A' && row['After File ID'] !== '' ? (
                                                             <div className="h-10 w-10">
-                                                                <img
-                                                                    src={`${API_BASE}/image/${row['After File ID']}`}
+                                                                <AuthImage
+                                                                    src={`/image/${row['After File ID']}`}
                                                                     alt="Resolved"
                                                                     className="h-full w-full rounded object-cover border border-green-200 ring-1 ring-green-400"
-                                                                    loading="lazy"
                                                                 />
                                                             </div>
                                                         ) : (

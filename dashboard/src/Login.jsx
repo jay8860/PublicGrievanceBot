@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import { Lock } from 'lucide-react';
+import api from './api';
 
 const Login = ({ onLogin }) => {
     const [username, setUsername] = useState('');
@@ -8,19 +8,15 @@ const Login = ({ onLogin }) => {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
-    // Use relative path since we configured App.jsx to handle PROD/DEV API selection
-    // But wait, App.jsx defines API_BASE not globally. 
-    // Let's use the same logic or pass it down? 
-    // Simpler: Just rely on Vite Env or same relative logic.
-    const API_BASE = import.meta.env.PROD ? '/api' : (import.meta.env.VITE_API_URL || 'http://localhost:8000/api');
-
     const handleLogin = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
 
         try {
-            const res = await axios.post(`${API_BASE}/login`, { username, password });
+            // /api/login does not require auth, but we still use the shared
+            // instance so API_BASE stays defined in exactly one place.
+            const res = await api.post('/login', { username, password });
             if (res.data.access_token) {
                 // Save to LocalStorage
                 localStorage.setItem('token', res.data.access_token);

@@ -11,7 +11,7 @@ import asyncio
 import os
 
 # Auth Imports
-from auth import verify_admin, create_access_token, verify_password
+from auth import verify_admin, create_access_token, get_current_admin
 
 # --- CONFIG ---
 CACHE_DURATION_SECONDS = 60 # Cache data for 1 minute
@@ -25,9 +25,10 @@ class LoginRequest(BaseModel):
 
 
 # CORS
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all for demo/dev
+    allow_origins=_cors_origins, # Configurable via CORS_ORIGINS env var; defaults to "*" for demo/dev
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -94,10 +95,10 @@ def get_cached_dataframe():
         logger.error(f"Data Fetch Error: {e}")
         if CACHE["data"] is not None:
              return CACHE["data"]
-        # Allow returning empty DF instead of crashing if persistent error?
-        # Better to bubble up so we know it failed, but for Frontend it's better to show empty than crash?
-        # Let's re-raise to see error in debug endpoint.
-        raise e
+        # No cache to fall back to (e.g. Sheets misconfigured or rate-limited
+        # on first request) - degrade to "no data" instead of a 500 that takes
+        # the whole dashboard down. Use /api/debug_auth to diagnose the cause.
+        return pd.DataFrame()
 
 # --- ENDPOINTS ---
 
@@ -111,8 +112,14 @@ def login(creds: LoginRequest):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
 
 
+@app.get("/api/health")
+def health_check():
+    """Lightweight health check for hosting platform. No auth, no Sheets call."""
+    return {"status": "ok"}
+
+
 @app.get("/api/debug_auth")
-def debug_auth():
+def debug_auth(admin: str = Depends(get_current_admin)):
     """Debugs Google Sheets Connection."""
     try:
         client = get_client()
@@ -133,7 +140,7 @@ def debug_auth():
 
 
 @app.get("/api/stats")
-def get_stats():
+def get_stats(admin: str = Depends(get_current_admin)):
     df = get_cached_dataframe()
     total = len(df)
     
@@ -154,7 +161,7 @@ def get_stats():
     }
 
 @app.get("/api/filters")
-def get_filters():
+def get_filters(admin: str = Depends(get_current_admin)):
     df = get_cached_dataframe()
     def get_unique(col):
         if col in df.columns:
@@ -169,7 +176,7 @@ def get_filters():
     }
 
 @app.get("/api/officers")
-def get_officer_details():
+def get_officer_details(admin: str = Depends(get_current_admin)):
     """Returns the Officer Map (SLA, L1, L2 for each Category)."""
     return get_officer_map()
 
@@ -179,33 +186,41 @@ def get_grievances(
     status: str = Query(None),
     severity: str = Query(None),
     officer: str = Query(None),
-    search: str = Query(None)
+    search: str = Query(None),
+    admin: str = Depends(get_current_admin)
 ):
     df = get_cached_dataframe().copy()
-    
+
     # Filters
-    if category: df = df[df['Category'] == category]
-    if status: df = df[df['Status'] == status]
-    if severity: df = df[df['Severity'] == severity]
-    if officer: df = df[df['Officer'] == officer]
-    
+    if category and 'Category' in df.columns: df = df[df['Category'] == category]
+    if status and 'Status' in df.columns: df = df[df['Status'] == status]
+    if severity and 'Severity' in df.columns: df = df[df['Severity'] == severity]
+    if officer and 'Officer' in df.columns: df = df[df['Officer'] == officer]
+
     if search:
-        # Search in ID, Description, Category
-        mask = (
-            df['Ticket ID'].astype(str).str.contains(search, case=False, na=False) |
-            df['Description'].str.contains(search, case=False, na=False)
-        )
-        df = df[mask]
-    
+        # Search in ID, Description
+        mask = None
+        if 'Ticket ID' in df.columns:
+            mask = df['Ticket ID'].astype(str).str.contains(search, case=False, na=False, regex=False)
+        if 'Description' in df.columns:
+            desc_mask = df['Description'].astype(str).str.contains(search, case=False, na=False, regex=False)
+            mask = desc_mask if mask is None else (mask | desc_mask)
+        if mask is not None:
+            df = df[mask]
+        else:
+            df = df.iloc[0:0]
+
     # Convert to API format (list of dicts)
     # Handle NaN for JSON serialization
     df = df.where(pd.notnull(df), None)
     return df.to_dict(orient='records')
 
 @app.get("/api/locations")
-def get_locations():
+def get_locations(admin: str = Depends(get_current_admin)):
     """Lightweight endpoint for Map View."""
     df = get_cached_dataframe()
+    if 'Lat' not in df.columns or 'Long' not in df.columns:
+        return []
     # Filter valid coordinates
     valid_geo = df.dropna(subset=['Lat', 'Long'])
     
@@ -227,7 +242,7 @@ import requests
 from bot import TELEGRAM_BOT_TOKEN # Reuse token
 
 @app.get("/api/image/{file_id}")
-def get_telegram_image(file_id: str):
+def get_telegram_image(file_id: str, admin: str = Depends(get_current_admin)):
     """Proxies image from Telegram to avoid CORS and Token exposure."""
     if not file_id or file_id == "N/A":
         return JSONResponse({"error": "No ID"}, status_code=404)

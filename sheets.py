@@ -3,6 +3,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
 import logging
+import time
 from datetime import datetime
 
 # --- CONFIGURATION ---
@@ -83,7 +84,6 @@ def log_ticket(ticket_data):
         
         sheet.append_row(row)
         logger.info(f"Ticket {ticket_data.get('ticket_id')} logged to Sheets.")
-        return True
         return True
     except Exception as e:
         logger.error(f"Sheet Write Error: {e}")
@@ -171,11 +171,25 @@ OFFICER_CACHE = {
 }
 CACHE_TTL = 300 # 5 minutes
 
+def _parse_chat_id(value):
+    """Best-effort parse of a Telegram_Chat_ID cell value to an int, else None."""
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def get_officer_map():
     """
     Fetches Officer Details from 'Officer Details' sheet.
-    Schema: Officer_ID, Full_Name, Mobile, Designation, Sector, Zone, Level, Reports_To, Sector_Head_ID
-    Returns: { "Category": {"L1": "Name", "L2": "Name", "SLA": 48} }
+    Schema: Officer_ID, Full_Name, Mobile, Designation, Sector, Zone, Level, Reports_To, Sector_Head_ID,
+            Telegram_Chat_ID (optional)
+    Returns: { "Category": {"L1": "Name", "L2": "Name", "SLA": 48, "L1_ChatID": int|None, "L2_ChatID": int|None} }
     """
     global OFFICER_CACHE
     now = time.time()
@@ -198,12 +212,13 @@ def get_officer_map():
         records = sheet.get_all_records()
         
         # 1. Build ID Lookup
-        # Officer_ID -> {Name, Level, Reports_To}
+        # Officer_ID -> {Name, Level, Reports_To, ChatID}
         officer_db = {
             str(row.get("Officer_ID")): {
                 "name": row.get("Full_Name"),
                 "reports_to": str(row.get("Reports_To")),
-                "level": str(row.get("Level"))
+                "level": str(row.get("Level")),
+                "chat_id": _parse_chat_id(row.get("Telegram_Chat_ID"))
             } for row in records
         }
 
@@ -212,22 +227,30 @@ def get_officer_map():
         for row in records:
             sector = row.get("Sector")
             if not sector: continue
-            
+
             # Logic: Find the "Ground" officer (Level 1) for this sector
             # If multiple Lv1s exist, this simple logic picks the last one encountered.
             # Ideally obtaining "Zone" from the Ticket would map to specific Lv1.
             # For now, we map Sector -> One Rep.
-            
+
             lvl = str(row.get("Level"))
             if lvl in ["1", "L1", "Field"]:
+                if sector in mapping:
+                    logger.warning(f"Multiple L1 officers found for sector '{sector}'; overwriting previous mapping.")
+
                 l1_name = row.get("Full_Name")
+                l1_chat_id = _parse_chat_id(row.get("Telegram_Chat_ID"))
                 l2_id = str(row.get("Reports_To"))
-                l2_name = officer_db.get(l2_id, {}).get("name", "Unassigned")
-                
+                l2_info = officer_db.get(l2_id, {})
+                l2_name = l2_info.get("name", "Unassigned")
+                l2_chat_id = l2_info.get("chat_id")
+
                 mapping[sector] = {
                     "L1": l1_name,
                     "L2": l2_name,
-                    "SLA": 48 # Default as column is missing
+                    "SLA": 48, # Default as column is missing
+                    "L1_ChatID": l1_chat_id,
+                    "L2_ChatID": l2_chat_id
                 }
         
         # Update Cache
