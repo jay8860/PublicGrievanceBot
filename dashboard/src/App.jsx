@@ -5,7 +5,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import { LayoutDashboard, Map as MapIcon, Table as TableIcon, Filter, RefreshCcw, LogOut } from 'lucide-react';
 import L from 'leaflet';
 import Login from './Login'; // Import Login
-import api from './api';
+import api, { AUTH_EXPIRED_EVENT, isAbortedRequest } from './api';
 import AuthImage from './AuthImage';
 
 // Fix Leaflet Icon
@@ -20,8 +20,18 @@ let DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
+// TEMPORARY LOGIN BYPASS (mirrors BYPASS_LOGIN in auth.py): placeholder
+// "token" that only satisfies the local auth guard below while the backend
+// has the login bypass on. It is never used as a real JWT - when the bypass
+// is enabled the API accepts requests without one anyway.
+const BYPASS_TOKEN = 'bypass-login';
+
 function App() {
     const [token, setToken] = useState(localStorage.getItem('token') || null); // Auth State
+    // Whether the API reported that its temporary login bypass is on.
+    const [bypassLogin, setBypassLogin] = useState(false);
+    // Hold off choosing between Login / Dashboard until /health answered.
+    const [authChecked, setAuthChecked] = useState(false);
     const [view, setView] = useState('map'); // map, list
     const [stats, setStats] = useState(null);
     const [filters, setFilters] = useState({});
@@ -38,48 +48,93 @@ function App() {
     // Officer Map
     const [officerMap, setOfficerMap] = useState({});
 
+    // True when the API rejected our stored token (see AUTH_EXPIRED_EVENT
+    // below) so the Login screen can explain why the dashboard vanished.
+    const [sessionExpired, setSessionExpired] = useState(false);
+
     // --- EFFECTS ---
+
+    // While the temporary backend bypass is on, this placeholder satisfies
+    // the auth guard so the Login screen stays hidden.
+    const effectiveToken = token || (bypassLogin ? BYPASS_TOKEN : null);
 
     // 1. Initial Auth Check
     useEffect(() => {
         const storedToken = localStorage.getItem('token');
         if (storedToken) setToken(storedToken);
+
+        // /api/health is public and reports whether the API has BYPASS_LOGIN
+        // on. If it is unreachable (or still protected), we silently fall
+        // back to the normal Login screen - that case is expected and must
+        // not show an error here.
+        api.get('/health')
+            .then((res) => {
+                if (res.data && res.data.bypass_login) setBypassLogin(true);
+            })
+            .catch(() => { })
+            .finally(() => setAuthChecked(true));
     }, []);
 
-    // 2. Fetch Data on Auth or Load
+    // 2. React to a rejected token without reloading the page.
+    // api.js fires AUTH_EXPIRED_EVENT when a protected call comes back 401
+    // (missing/expired JWT). Clearing the token here makes the auth guard below
+    // render <Login /> again, and `sessionExpired` explains why the dashboard
+    // disappeared. A full window.location.reload() used to do this job, but the
+    // reload aborted the dashboard requests that were still in flight, so the
+    // console filled up with "Data Error / Request aborted".
     useEffect(() => {
-        if (token) {
+        const onAuthExpired = () => {
+            setToken(null);
+            setSessionExpired(true);
+        };
+        window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+        return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+    }, []);
+
+    // 3. Fetch Data on Auth or Load
+    useEffect(() => {
+        if (effectiveToken) {
             fetchStats();
             fetchFilters();
-            fetchData();
             fetchOfficerMap();
         }
-    }, [token]);
+    }, [effectiveToken]);
 
-    // Re-fetch when filters change
+    // Re-fetch when filters change (and once on load / after login).
+    // The token guard matters: without it this effect also fired /works while
+    // the Login screen was up, the API answered 401, and the old reload-on-401
+    // interceptor turned that into an endless page-reload loop.
     useEffect(() => {
-        fetchData();
-    }, [selectedCategory, selectedStatus, selectedSeverity, search]);
+        if (effectiveToken) fetchData();
+    }, [effectiveToken, selectedCategory, selectedStatus, selectedSeverity, search]);
 
     const fetchStats = async () => {
         try {
             const res = await api.get('/stats');
             setStats(res.data);
-        } catch (e) { console.error("Stats Error", e); }
+        } catch (e) {
+            // Ignore aborted requests (page reload / navigation): there is no
+            // server answer to report, so logging them is pure console noise.
+            if (!isAbortedRequest(e)) console.error("Stats Error", e);
+        }
     };
 
     const fetchFilters = async () => {
         try {
             const res = await api.get('/filters');
             setFilters(res.data);
-        } catch (e) { console.error("Filters Error", e); }
+        } catch (e) {
+            if (!isAbortedRequest(e)) console.error("Filters Error", e);
+        }
     };
 
     const fetchOfficerMap = async () => {
         try {
             const res = await api.get('/officers');
             setOfficerMap(res.data);
-        } catch (e) { console.error("Officer Map Error", e); }
+        } catch (e) {
+            if (!isAbortedRequest(e)) console.error("Officer Map Error", e);
+        }
     };
 
     const fetchData = async () => {
@@ -98,7 +153,11 @@ function App() {
             // For map, we use the same filtered dataset for consistency
             setLocations(worksRes.data.filter(w => w.Lat && w.Long));
 
-        } catch (e) { console.error("Data Error", e); }
+        } catch (e) {
+            // An aborted request (reload/navigation while Sheets was still
+            // answering) is not a data error - see api.js isAbortedRequest.
+            if (!isAbortedRequest(e)) console.error("Data Error", e);
+        }
         setLoading(false);
     };
 
@@ -143,8 +202,28 @@ function App() {
     );
 
     // --- AUTH GUARD ---
-    if (!token) {
-        return <Login onLogin={setToken} />;
+    // Unchanged behaviour: no token -> Login screen. The <Login /> component
+    // and the whole auth flow are untouched. The only difference is that when
+    // the API runs with BYPASS_LOGIN=true, /health reports it and
+    // `effectiveToken` satisfies this guard, so the dashboard opens directly.
+    // Turn the bypass off and this screen comes back on its own.
+    if (!authChecked) {
+        return (
+            <div className="min-h-screen flex items-center justify-center text-gray-400">
+                Loading...
+            </div>
+        );
+    }
+    if (!effectiveToken) {
+        return (
+            <Login
+                notice={sessionExpired ? 'Your session expired. Please sign in again.' : ''}
+                onLogin={(newToken) => {
+                    setSessionExpired(false);
+                    setToken(newToken);
+                }}
+            />
+        );
     }
 
     return (
@@ -177,9 +256,20 @@ function App() {
                             <RefreshCcw size={18} />
                         </button>
                         <div className="h-6 w-px bg-gray-300 mx-1 self-center"></div>
-                        <button onClick={handleLogout} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Logout">
-                            <LogOut size={18} />
-                        </button>
+                        {/* Temporary: visible while the API has BYPASS_LOGIN on. */}
+                        {bypassLogin && !token && (
+                            <span
+                                className="self-center text-xs font-semibold px-2 py-1 rounded bg-amber-100 text-amber-800 border border-amber-300"
+                                title="BYPASS_LOGIN is enabled on the API - the login screen is temporarily hidden. Set BYPASS_LOGIN=false and restart the API to bring it back."
+                            >
+                                LOGIN BYPASSED
+                            </span>
+                        )}
+                        {token && (
+                            <button onClick={handleLogout} className="p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Logout">
+                                <LogOut size={18} />
+                            </button>
+                        )}
                     </div>
                 </div>
             </header>

@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Lock } from 'lucide-react';
-import api from './api';
+import api, { API_BASE } from './api';
 
-const Login = ({ onLogin }) => {
+const Login = ({ onLogin, notice = '' }) => {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
@@ -24,7 +24,18 @@ const Login = ({ onLogin }) => {
             }
         } catch (err) {
             console.error(err);
-            setError("Invalid credentials");
+            // Distinguish "wrong password" from "the API isn't reachable" -
+            // both used to surface as the same "Invalid credentials" message,
+            // which makes debugging a failed login impossible.
+            const status = err.response && err.response.status;
+            const detail = err.response && err.response.data && err.response.data.detail;
+            if (status === 401) {
+                setError(detail || 'Incorrect username or password');
+            } else if (status) {
+                setError(`Login failed (HTTP ${status}): ${detail || 'server error'}`);
+            } else {
+                setError(`Cannot reach the API at ${API_BASE}. Is the backend running?`);
+            }
         }
         setLoading(false);
     };
@@ -40,6 +51,12 @@ const Login = ({ onLogin }) => {
 
                 <h2 className="text-2xl font-bold text-center text-gray-800 mb-2">Admin Access</h2>
                 <p className="text-center text-gray-500 mb-8">Please sign in to continue</p>
+
+                {notice && (
+                    <div className="bg-amber-50 text-amber-700 p-3 rounded-lg text-sm mb-4 border border-amber-200 text-center font-medium">
+                        {notice}
+                    </div>
+                )}
 
                 {error && (
                     <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 border border-red-100 text-center font-medium">
