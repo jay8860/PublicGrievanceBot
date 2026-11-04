@@ -5,7 +5,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import { LayoutDashboard, Map as MapIcon, Table as TableIcon, Filter, RefreshCcw, LogOut } from 'lucide-react';
 import L from 'leaflet';
 import Login from './Login'; // Import Login
-import api, { AUTH_EXPIRED_EVENT, isAbortedRequest } from './api';
+import api, { AUTH_EXPIRED_EVENT, isAbortedRequest, isAuthFailure } from './api';
 import AuthImage from './AuthImage';
 
 // Fix Leaflet Icon
@@ -113,9 +113,9 @@ function App() {
             const res = await api.get('/stats');
             setStats(res.data);
         } catch (e) {
-            // Ignore aborted requests (page reload / navigation): there is no
-            // server answer to report, so logging them is pure console noise.
-            if (!isAbortedRequest(e)) console.error("Stats Error", e);
+            // Aborted requests (page reload / navigation) and 401s (already
+            // handled by api.js -> Login screen) are not data errors.
+            if (!isAbortedRequest(e) && !isAuthFailure(e)) console.error("Stats Error", e);
         }
     };
 
@@ -124,7 +124,7 @@ function App() {
             const res = await api.get('/filters');
             setFilters(res.data);
         } catch (e) {
-            if (!isAbortedRequest(e)) console.error("Filters Error", e);
+            if (!isAbortedRequest(e) && !isAuthFailure(e)) console.error("Filters Error", e);
         }
     };
 
@@ -133,7 +133,7 @@ function App() {
             const res = await api.get('/officers');
             setOfficerMap(res.data);
         } catch (e) {
-            if (!isAbortedRequest(e)) console.error("Officer Map Error", e);
+            if (!isAbortedRequest(e) && !isAuthFailure(e)) console.error("Officer Map Error", e);
         }
     };
 
@@ -154,9 +154,9 @@ function App() {
             setLocations(worksRes.data.filter(w => w.Lat && w.Long));
 
         } catch (e) {
-            // An aborted request (reload/navigation while Sheets was still
-            // answering) is not a data error - see api.js isAbortedRequest.
-            if (!isAbortedRequest(e)) console.error("Data Error", e);
+            // Aborted requests (reload/navigation while Sheets was still
+            // answering) and 401s are not data errors - see api.js helpers.
+            if (!isAbortedRequest(e) && !isAuthFailure(e)) console.error("Data Error", e);
         }
         setLoading(false);
     };

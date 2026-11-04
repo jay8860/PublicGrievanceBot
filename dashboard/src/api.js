@@ -39,6 +39,12 @@ export const isAbortedRequest = (error) =>
         error.message === 'Request aborted'
     );
 
+// A 401 on a protected route is already handled by the interceptor below
+// (token cleared + AUTH_EXPIRED_EVENT, App.jsx shows the Login screen), so
+// callers do not need to log it as a data error on top of that.
+export const isAuthFailure = (error) =>
+    !!error && !!error.response && error.response.status === 401;
+
 api.interceptors.response.use(
     (response) => response,
     (error) => {
