@@ -1,5 +1,4 @@
 python-telegram-bot
-google-generativeai
 pillow
 gspread
 oauth2client
@@ -10,3 +9,5 @@ openpyxl
 python-jose[cryptography]
 passlib[bcrypt]
 python-multipart
+python-dotenv
+requests

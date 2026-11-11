@@ -1,29 +1,39 @@
-import os
 import logging
 import asyncio
 import hashlib
 import time
 from datetime import datetime, timedelta
+
+from config import get_env
+
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-import google.generativeai as genai
 from PIL import Image
+import base64
 import io
 import json
 import requests
 
 # --- CONFIGURATION ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
 
-_default_officer_chat_id_raw = os.getenv("DEFAULT_OFFICER_CHAT_ID")
+# --- AI TRIAGE (OpenRouter) ------------------------------------------------
+# OpenRouter serves an OpenAI-compatible /chat/completions API, so a plain
+# POST via `requests` is enough - no provider SDK needed. The chosen model
+# must be vision-capable because it receives the grievance photo.
+OPENROUTER_API_KEY = get_env("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = get_env("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+OPENROUTER_BASE_URL = get_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+OPENROUTER_TIMEOUT_SECONDS = 60
+
+_default_officer_chat_id_raw = get_env("DEFAULT_OFFICER_CHAT_ID")
 try:
     DEFAULT_OFFICER_CHAT_ID = int(_default_officer_chat_id_raw) if _default_officer_chat_id_raw else None
 except (ValueError, TypeError):
     logging.warning(f"DEFAULT_OFFICER_CHAT_ID '{_default_officer_chat_id_raw}' is not a valid integer; ignoring.")
     DEFAULT_OFFICER_CHAT_ID = None
 
-ENABLE_OFFICER_NOTIFICATIONS = os.getenv("ENABLE_OFFICER_NOTIFICATIONS", "true").lower() != "false"
+ENABLE_OFFICER_NOTIFICATIONS = get_env("ENABLE_OFFICER_NOTIFICATIONS", "true").lower() != "false"
 
 # --- TRIAGE CONFIG ---
 MAX_REPORTS_PER_HOUR = 100 
@@ -36,9 +46,13 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-flash-latest')
+# The bot can still start without the triage key, but every photo would fail -
+# so make a misconfigured deployment obvious in the logs instead of silent.
+if not OPENROUTER_API_KEY:
+    logging.error(
+        "OPENROUTER_API_KEY is not set - photo triage will fail. "
+        "Set it as an environment variable (Railway: Variables)."
+    )
 
 # --- STATES ---
 LOCATION = 1
@@ -127,13 +141,76 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Send a help message."""
     await update.message.reply_text("Just send a photo of the grievance! I'll handle the rest.")
 
-async def analyze_image_with_bouncer(image_bytes):
-    """Sends image to Gemini for Triage (Relevance Check) + Analysis."""
-    try:
-        image = Image.open(io.BytesIO(image_bytes))
-        
-        # PROMPT: acts as the "Bouncer"
-        prompt = """
+def _image_to_data_url(image_bytes: bytes) -> str:
+    """Re-encode the photo as a small JPEG and return a data: URL for OpenRouter."""
+    image = Image.open(io.BytesIO(image_bytes))
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    # Telegram photos can be several MB; 1024px keeps the request small (and
+    # cheap) while still giving the triage prompt the detail it needs.
+    image.thumbnail((1024, 1024))
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=85)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _extract_json(text: str) -> dict:
+    """Pull the JSON object out of a model reply, tolerating ```json fences."""
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else ""
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"Model did not return JSON: {text!r}")
+    return json.loads(cleaned[start:end + 1])
+
+
+def _call_openrouter(messages, model=None, max_tokens=800, temperature=0.2) -> str:
+    """POST to OpenRouter's chat-completions endpoint and return the reply text."""
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set (add it to the environment / Railway Variables)"
+        )
+
+    response = requests.post(
+        f"{OPENROUTER_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "X-Title": "Public Grievance Bot",
+        },
+        json={
+            "model": model or OPENROUTER_MODEL,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        },
+        timeout=OPENROUTER_TIMEOUT_SECONDS,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"OpenRouter HTTP {response.status_code}: {response.text[:300]}")
+
+    payload = response.json()
+    choices = payload.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"OpenRouter returned no choices: {str(payload)[:300]}")
+
+    content = (choices[0].get("message") or {}).get("content")
+    # Some providers return content as a list of parts instead of a string.
+    if isinstance(content, list):
+        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return content or ""
+
+
+def _analyze_image_sync(image_bytes):
+    """Blocking triage call: photo -> OpenRouter vision model -> parsed JSON."""
+    # PROMPT: acts as the "Bouncer"
+
+    prompt = """
         Analyze this image strictly for a Public Grievance System.
         
         Phase 1: FORENSIC & RELEVANCE CHECK (The Bouncer)
@@ -172,9 +249,25 @@ async def analyze_image_with_bouncer(image_bytes):
             "description": "string"
         }
         """
-        
-        response = model.generate_content([prompt, image], generation_config={"response_mime_type": "application/json"})
-        return json.loads(response.text)
+
+    text = _call_openrouter([
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": _image_to_data_url(image_bytes)}},
+            ],
+        }
+    ])
+    return _extract_json(text)
+
+
+async def analyze_image_with_bouncer(image_bytes):
+    """Sends image to OpenRouter (vision model) for Triage + Analysis."""
+    try:
+        # `requests` is blocking; run it in a worker thread so the Telegram
+        # event loop keeps serving other users while the model thinks.
+        return await asyncio.to_thread(_analyze_image_sync, image_bytes)
     except Exception as e:
         logging.error(f"AI Error: {e}")
         return None
@@ -445,6 +538,13 @@ def main() -> None:
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
         logging.error("TELEGRAM_BOT_TOKEN is not set. Set the TELEGRAM_BOT_TOKEN environment variable before starting the bot.")
         raise SystemExit("TELEGRAM_BOT_TOKEN environment variable is missing or invalid.")
+
+    if not OPENROUTER_API_KEY:
+        logging.error(
+            "OPENROUTER_API_KEY is not set. Photo triage cannot work. "
+            "Set OPENROUTER_API_KEY (Railway: Variables -> New Variable)."
+        )
+        raise SystemExit("OPENROUTER_API_KEY environment variable is missing.")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 

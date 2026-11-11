@@ -2,9 +2,9 @@
 
 A Telegram bot + admin dashboard for public grievance reporting. A citizen
 sends a photo of a civic issue (pothole, garbage, broken streetlight, etc.);
-Gemini Vision validates and classifies it; the citizen shares their GPS
-location; a ticket is logged to Google Sheets and the assigned officer is
-notified on Telegram. The officer resolves it by replying with an "after"
+Gemini Vision (via OpenRouter) validates and classifies it; the citizen shares
+their GPS location; a ticket is logged to Google Sheets and the assigned officer
+is notified on Telegram. The officer resolves it by replying with an "after"
 photo, which notifies the citizen and asks for a rating. A React dashboard
 gives admins a map/list view with filters and SLA escalation status.
 
@@ -29,8 +29,10 @@ gives admins a map/list view with filters and SLA escalation status.
    environment variable settings instead) and fill in:
    - `TELEGRAM_BOT_TOKEN` — from [@BotFather](https://t.me/BotFather). The
      bot refuses to start without this; there is no baked-in default.
-   - `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) — from
-     [Google AI Studio](https://aistudio.google.com/apikey).
+   - `OPENROUTER_API_KEY` — from [OpenRouter](https://openrouter.ai/keys).
+     The photo triage/vision call goes through OpenRouter; without this key
+     the bot refuses to start. Optional `OPENROUTER_MODEL` overrides the
+     vision model (default `google/gemini-2.0-flash-001`).
    - `GOOGLE_SHEETS_CREDENTIALS` — a Google Cloud service account key
      (JSON, as a single-line string), shared as an **Editor** on the target
      Google Sheet. See "Google Sheet setup" below.
@@ -55,6 +57,44 @@ gives admins a map/list view with filters and SLA escalation status.
    uvicorn api:app --reload   # Dashboard API + frontend
    ```
    Or use `start.sh` (used by the `Procfile`/`Dockerfile`) which runs both.
+
+## Logging in to the dashboard
+
+The dashboard uses a **single shared admin login**, read from the
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` environment variables (`config.py` loads
+a local `.env` file for you). If those are unset, the server falls back to
+`admin` / `admin123` and logs a loud security warning at startup — so the
+first thing to check when a login is rejected is which of the two the
+*running* server actually picked up:
+
+- **Local dev**: copy `.env.example` to `.env` and set `ADMIN_USERNAME` /
+  `ADMIN_PASSWORD`. `uvicorn api:app` picks them up automatically.
+- **Hosted (Railway etc.)**: set them in the platform's Variables/Config tab
+  and redeploy. A local `.env` is gitignored and is **not** uploaded.
+
+Because env vars are read once at startup, restart the API after changing
+them. If the login screen says "Cannot reach the API at ...", the backend
+isn't running (or `VITE_API_URL` points at the wrong host) — that is a
+different failure from a rejected password.
+
+Sessions last 24 hours (`ACCESS_TOKEN_EXPIRE_MINUTES`) and are signed with
+`SECRET_KEY`; changing `SECRET_KEY` invalidates every existing session, so
+open dashboards bounce back to the login screen.
+
+### Temporarily hiding the login (`BYPASS_LOGIN`)
+
+If you need to get into the dashboard and the login screen is in the way, set
+`BYPASS_LOGIN=true` (in `.env` locally, or in the host's Variables tab) and
+restart the API. The protected routes then stop requiring a JWT and the
+dashboard opens directly. **Nothing is removed:** `Login.jsx`, the password
+check, the JWT issuing/verification and the token expiry all stay in the
+codebase, they are simply not used while the flag is on. The API logs a loud
+security warning at startup and the dashboard header shows a **LOGIN
+BYPASSED** badge so it can't be forgotten.
+
+Set `BYPASS_LOGIN=false` (or delete the variable) and restart the API to bring
+the login screen back — no code change needed either way. Never leave it on for
+a public deployment.
 
 ## Google Sheet setup
 
