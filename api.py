@@ -10,8 +10,10 @@ import logging
 import asyncio
 import os
 
+from config import get_env
+
 # Auth Imports
-from auth import verify_admin, create_access_token, get_current_admin
+from auth import verify_admin, create_access_token, get_current_admin, BYPASS_LOGIN
 
 # --- CONFIG ---
 CACHE_DURATION_SECONDS = 60 # Cache data for 1 minute
@@ -25,7 +27,7 @@ class LoginRequest(BaseModel):
 
 
 # CORS
-_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",")]
+_cors_origins = [o.strip() for o in get_env("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins, # Configurable via CORS_ORIGINS env var; defaults to "*" for demo/dev
@@ -114,8 +116,13 @@ def login(creds: LoginRequest):
 
 @app.get("/api/health")
 def health_check():
-    """Lightweight health check for hosting platform. No auth, no Sheets call."""
-    return {"status": "ok"}
+    """Lightweight health check for hosting platform. No auth, no Sheets call.
+
+    Also reports `bypass_login` so the dashboard can tell whether the
+    temporary login bypass (auth.BYPASS_LOGIN) is on and hide the Login
+    screen accordingly. Safe to expose: it reveals no credentials.
+    """
+    return {"status": "ok", "bypass_login": BYPASS_LOGIN}
 
 
 @app.get("/api/debug_auth")
@@ -137,6 +144,67 @@ def debug_auth(admin: str = Depends(get_current_admin)):
     except Exception as e:
         import traceback
         return {"status": "error", "detail": str(e), "trace": traceback.format_exc()}
+
+
+@app.get("/api/ai_status")
+def ai_status(deep: bool = False, admin: str = Depends(get_current_admin)):
+    """Diagnostics for the OpenRouter photo-triage integration.
+
+    Reports whether OPENROUTER_API_KEY reached the running process and, with
+    ?deep=true, makes one tiny live call through the exact helpers the bot
+    uses - so a bad key, missing credits or a non-vision model is visible
+    without waiting for a citizen to send a photo. Admin-only and never
+    echoes the key itself.
+    """
+    import bot as bot_module
+
+    status = {
+        "openrouter_key_set": bool(bot_module.OPENROUTER_API_KEY),
+        "model": bot_module.OPENROUTER_MODEL,
+        "base_url": bot_module.OPENROUTER_BASE_URL,
+    }
+
+    if not bot_module.OPENROUTER_API_KEY:
+        status["check"] = {
+            "ok": False,
+            "error": "OPENROUTER_API_KEY is not set in this container's environment",
+        }
+        return status
+
+    try:
+        if deep:
+            # Real end-to-end check: build a tiny image and push it through the
+            # same vision path used for citizen photos.
+            import io as _io
+            from PIL import Image as _Image
+
+            buffer = _io.BytesIO()
+            _Image.new("RGB", (64, 64), (200, 40, 40)).save(buffer, "JPEG")
+            reply = bot_module._call_openrouter(
+                [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What colour is this image? Answer in one word."},
+                        {"type": "image_url",
+                         "image_url": {"url": bot_module._image_to_data_url(buffer.getvalue())}},
+                    ],
+                }],
+                max_tokens=8,
+                temperature=0,
+            )
+            status["check"] = {"ok": True, "mode": "vision", "reply": reply.strip()[:40]}
+        else:
+            reply = bot_module._call_openrouter(
+                [{"role": "user", "content": "Reply with the single word: OK"}],
+                max_tokens=8,
+                temperature=0,
+            )
+            status["check"] = {"ok": True, "mode": "text", "reply": reply.strip()[:40]}
+    except Exception as e:
+        logger.error(f"AI status check failed: {e}")
+        status["check"] = {"ok": False, "error": str(e)[:300]}
+
+    return status
 
 
 @app.get("/api/stats")
