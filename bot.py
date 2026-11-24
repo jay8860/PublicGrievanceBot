@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta
 
 from config import get_env
+from core import bot_hooks
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -393,10 +394,21 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     }
     # Run in background so it doesn't block the bot
     asyncio.create_task(asyncio.to_thread(log_ticket, ticket_data))
-    
+
+    # --- MIRROR INTO THE PLATFORM DB (department routing / TAT / escalation) ---
+    platform = bot_hooks.record_complaint(
+        citizen_chat_id=update.effective_chat.id,
+        analysis=analysis, lat=lat, lon=lon, accuracy=accuracy,
+        geo_info=geo_info, photo_file_id=photo_file_id,
+    )
+
     # --- NOTIFY OFFICER ---
     notify_chat_id = category_data.get("L1_ChatID") or DEFAULT_OFFICER_CHAT_ID
 
+    if platform.get("assigned"):
+        # The platform already notified the officer (with action buttons), so
+        # skip the legacy notification to avoid sending the same thing twice.
+        notify_chat_id = None
     if ENABLE_OFFICER_NOTIFICATIONS and notify_chat_id:
         try:
             officer_msg = (
@@ -428,6 +440,11 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"🎫 <b>Ticket ID:</b> #{ticket_id}\n\n"
         f"<i>We have notified the designated officer.</i>"
     )
+
+    if platform.get("ticket"):
+        response_text += f"\n🏛 <b>Platform Ref:</b> {platform['ticket']}"
+    if platform.get("note"):
+        response_text += f"\nℹ️ {platform['note']}"
     
     await update.message.reply_html(response_text, reply_markup=None)
     
@@ -465,6 +482,17 @@ async def handle_officer_reply(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if success:
             await msg.reply_text(f"✅ <b>Ticket {ticket_id} Closed!</b>\nStatus updated to Resolved.", parse_mode='HTML')
+
+            # Mirror the resolution into the platform DB when this is a
+            # platform ticket (GRV-...); AI before/after check runs there.
+            import re as _re
+            _grv = _re.search(r"(GRV-\d{4}-\d{6})", original_text, re.IGNORECASE)
+            if _grv:
+                verification = await asyncio.to_thread(
+                    bot_hooks.resolve_from_officer,
+                    update.effective_chat.id, _grv.group(1), after_file_id)
+                if verification:
+                    await msg.reply_text(verification, parse_mode='HTML')
             
             # --- NOTIFY CITIZEN WITH VISUAL PROOF ---
             meta = await asyncio.to_thread(get_ticket_meta, ticket_id)
@@ -578,6 +606,9 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_rating_callback, pattern="^rate_"))
     
     application.add_handler(conv_handler)
+
+    # Platform handlers: officer onboarding + complaint action buttons.
+    bot_hooks.register_platform_handlers(application)
 
     # Run the bot
     application.run_polling()

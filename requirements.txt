@@ -11,3 +11,6 @@ passlib[bcrypt]
 python-multipart
 python-dotenv
 requests
+sqlalchemy>=2.0,<2.1
+psycopg2-binary>=2.9
+apscheduler>=3.10,<4

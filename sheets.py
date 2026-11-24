@@ -1,14 +1,15 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import os
 import json
 import logging
 import time
 from datetime import datetime
 
+from config import get_env
+
 # --- CONFIGURATION ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1d0a0lfbMyqFJpnn45kC5jZO2uQbcQkrcHlAF_yaP7qA/edit?usp=sharing"
-CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS") # User must set this in Railway
+CREDENTIALS_JSON = get_env("GOOGLE_SHEETS_CREDENTIALS") # User must set this in Railway
 
 # Setup Logging
 logger = logging.getLogger(__name__)

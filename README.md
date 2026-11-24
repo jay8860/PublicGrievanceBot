@@ -16,6 +16,14 @@ gives admins a map/list view with filters and SLA escalation status.
 - `auth.py` — admin login + JWT issuing/verification.
 - `dashboard/` — React (Vite) admin dashboard.
 
+### Platform v2 (departments, officers, TAT, escalation)
+
+The district-level features live in `core/` (database, RBAC, routing, TAT engine,
+AI verification) and are exposed under `/api/v2` by `routers/admin.py`; the
+escalation tick can also run as its own process (`worker.py`). Tests live in
+`tests/` (`python -m pytest tests -q`). Full details, env vars and the
+Sheets→DB migration are documented in **`DB_UPGRADE.md`**.
+
 ## Setup
 
 1. **Install dependencies**:

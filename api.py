@@ -19,7 +19,68 @@ from auth import verify_admin, create_access_token, get_current_admin, BYPASS_LO
 CACHE_DURATION_SECONDS = 60 # Cache data for 1 minute
 CACHE = {"data": None, "timestamp": None}
 
-app = FastAPI(title="Grievance Monitoring API")
+# --- PLATFORM (v2) WIRING -------------------------------------------------
+from contextlib import asynccontextmanager
+
+from core.db import SessionLocal, get_session, init_db
+from core.seed import ensure_seed
+from routers.admin import router as v2_router
+
+
+def _start_escalation_scheduler():
+    """Background TAT tick, so escalation never depends on an open dashboard."""
+    if get_env("ENABLE_ESCALATION_SCHEDULER", "true").lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from core.escalation import run_once
+    except ImportError as exc:          # optional dependency - worker still works
+        logging.getLogger(__name__).error("Escalation scheduler unavailable: %s", exc)
+        return None
+
+    interval = int(get_env("ESCALATION_TICK_SECONDS", "300"))
+    tick_log = logging.getLogger(__name__)
+
+    def tick():
+        db = SessionLocal()
+        try:
+            summary = run_once(db)
+            if summary["escalations"] or summary["reminders"] or summary["errors"]:
+                tick_log.info("Escalation tick: %s", summary)
+        except Exception as exc:        # never let a scheduler job die silently
+            tick_log.error("Escalation tick crashed: %s", exc)
+        finally:
+            db.close()
+
+    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler.add_job(tick, "interval", seconds=interval, id="tat_escalation",
+                      max_instances=1, coalesce=True, replace_existing=True)
+    scheduler.start()
+    return scheduler
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log = logging.getLogger(__name__)
+    url = init_db()
+    db = SessionLocal()
+    try:
+        ensure_seed(db)
+    finally:
+        db.close()
+    log.info("Platform DB ready (%s); v2 API mounted at /api/v2",
+             url.split("@")[-1] if "@" in url else url)
+    scheduler = _start_escalation_scheduler()
+    try:
+        yield
+    finally:
+        if scheduler:
+            scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="Grievance Monitoring API", lifespan=lifespan)
+app.include_router(v2_router)
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -105,13 +166,25 @@ def get_cached_dataframe():
 # --- ENDPOINTS ---
 
 @app.post("/api/login")
-def login(creds: LoginRequest):
+def login(creds: LoginRequest, db=Depends(get_session)):
+    """Individual admin accounts first, then the legacy env admin (unchanged)."""
+    from core.models import AdminUser
+    from core import security as platform_security
+
+    user = (db.query(AdminUser)
+            .filter(AdminUser.username == creds.username, AdminUser.active.is_(True))
+            .one_or_none())
+    if user and platform_security.verify_password(creds.password, user.password_hash):
+        token = platform_security.create_token(user.username, role=user.role)
+        return {"access_token": token, "token_type": "bearer", "role": user.role}
+
     if verify_admin(creds.username, creds.password):
-        # Generate Token
-        access_token = create_access_token(data={"sub": creds.username})
-        return {"access_token": access_token, "token_type": "bearer"}
-    else:
-        raise HTTPException(status_code=401, detail="Incorrect username or password")
+        # Legacy single admin from ADMIN_USERNAME/ADMIN_PASSWORD.
+        access_token = create_access_token(data={"sub": creds.username, "role": "admin"})
+        return {"access_token": access_token, "token_type": "bearer", "role": "admin"}
+
+    raise HTTPException(status_code=401, detail="Incorrect username or password")
+
 
 
 @app.get("/api/health")
