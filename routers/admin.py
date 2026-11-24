@@ -11,16 +11,19 @@ Design rules
 """
 import csv
 import io
-from datetime import datetime
+import os
+from collections import Counter
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from core import escalation, service
+from core import escalation, media, service
+
 from core.audit import log_action
 from core.db import get_session
 from core.geo import OPEN_STATUSES
@@ -132,6 +135,17 @@ class AdminIn(BaseModel):
     role: str = "admin"
 
 
+class VerificationIn(BaseModel):
+    action: str = Field(pattern="^(approve|reject|request_review|reopen)$")
+    note: str = ""
+
+
+class PasswordChangeIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+
 # -------------------------------------------------------------------- helpers
 def _dept(db: Session, department_id: str) -> Department:
     dept = db.get(Department, department_id)
@@ -203,6 +217,24 @@ def officer_out(db: Session, officer: Officer) -> dict:
     }
 
 
+def _image_payload(row: ComplaintImage, complaint_id: str) -> dict:
+    """Photo metadata for the dashboard.
+
+    ``url`` is relative to the ``/api`` base the React client uses, so an
+    archived photo is fetched from the volume endpoint below with the JWT;
+    ``telegram_file_id`` stays as the fallback for rows archived before
+    ``MEDIA_ROOT`` existed.
+    """
+    stored = bool(row.storage_key)
+    return {
+        "kind": row.kind,
+        "telegram_file_id": row.telegram_file_id,
+        "sha256": row.sha256,
+        "stored": stored,
+        "url": f"/v2/complaints/{complaint_id}/images/{row.kind}" if stored else "",
+    }
+
+
 def complaint_out(db: Session, c: Complaint, detail: bool = False) -> dict:
     dept = db.get(Department, c.department_id) if c.department_id else None
     cat = db.get(Category, c.category_id) if c.category_id else None
@@ -236,9 +268,10 @@ def complaint_out(db: Session, c: Complaint, detail: bool = False) -> dict:
         "sla_paused": c.sla_paused_at is not None,
     }
     if detail:
-        images = db.query(ComplaintImage).filter(ComplaintImage.complaint_id == c.id).all()
-        data["images"] = [{"kind": i.kind, "telegram_file_id": i.telegram_file_id,
-                           "sha256": i.sha256} for i in images]
+        data["images"] = [_image_payload(row, c.id)
+                          for row in (db.query(ComplaintImage)
+                                      .filter(ComplaintImage.complaint_id == c.id)
+                                      .order_by(ComplaintImage.created_at.asc()).all())]
         data["history"] = [{"action": h.action, "actor_type": h.actor_type,
                             "actor_id": h.actor_id, "from_level": h.from_level,
                             "to_level": h.to_level, "note": h.note,
@@ -514,8 +547,22 @@ def list_complaints(status: Optional[str] = Query(None),
                              | func.coalesce(Complaint.area, "").like(like))
     total = query.count()
     rows = query.order_by(Complaint.created_at.desc()).offset(offset).limit(limit).all()
-    return {"total": total, "limit": limit, "offset": offset,
-            "items": [complaint_out(db, c) for c in rows]}
+
+    # One query for every photo on the page instead of one per row.
+    image_map = {}
+    if rows:
+        for image in (db.query(ComplaintImage)
+                      .filter(ComplaintImage.complaint_id.in_([c.id for c in rows]))
+                      .order_by(ComplaintImage.created_at.asc()).all()):
+            image_map.setdefault(image.complaint_id, []).append(
+                _image_payload(image, image.complaint_id))
+
+    items = []
+    for complaint in rows:
+        payload = complaint_out(db, complaint)
+        payload["images"] = image_map.get(complaint.id, [])
+        items.append(payload)
+    return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 
 @router.get("/complaints/{complaint_id}")
@@ -524,16 +571,48 @@ def get_complaint(complaint_id: str, db: Session = Depends(get_session),
     return complaint_out(db, _complaint(db, complaint_id), detail=True)
 
 
+@router.get("/complaints/{complaint_id}/images/{kind}")
+def get_complaint_image(complaint_id: str, kind: str,
+                        db: Session = Depends(get_session),
+                        principal: Principal = Depends(require_admin)):
+    """Stream the archived before/after photo from the media volume.
+
+    404s when the photo was never archived (``MEDIA_ROOT`` unset, or a ticket
+    created before the volume existed) - the dashboard then falls back to the
+    Telegram file_id proxy.
+    """
+    if kind not in ("original", "resolution"):
+        raise HTTPException(400, "kind must be 'original' or 'resolution'")
+
+    complaint = _complaint(db, complaint_id)
+    row = (db.query(ComplaintImage)
+           .filter(ComplaintImage.complaint_id == complaint.id,
+                   ComplaintImage.kind == kind)
+           .order_by(ComplaintImage.created_at.desc())
+           .first())
+    if row is None:
+        raise HTTPException(404, "No photo recorded for this complaint")
+
+    path = media.photo_path(row.storage_key)
+    if not path:
+        raise HTTPException(404, "Photo is not archived on this server")
+    return FileResponse(path, media_type="image/jpeg", filename=os.path.basename(path))
+
+
 @router.post("/complaints/{complaint_id}/assign")
 def assign_complaint(complaint_id: str, payload: AssignIn,
                      db: Session = Depends(get_session),
                      principal: Principal = Depends(require_admin)):
     complaint = _complaint(db, complaint_id)
     officer = _officer(db, payload.officer_id) if payload.officer_id else None
+    if (officer and complaint.department_id and officer.department_id
+            and complaint.department_id != officer.department_id):
+        raise HTTPException(400, "That officer belongs to a different department")
     escalation.assign(db, complaint, officer, actor_type="admin",
                       actor_id=principal.username,
                       reason=payload.reason or "manual assignment by administrator")
     return complaint_out(db, complaint)
+
 
 
 @router.post("/complaints/{complaint_id}/acknowledge")
@@ -900,6 +979,267 @@ def deactivate_admin(admin_id: str, db: Session = Depends(get_session),
                entity="admin_user", entity_id=user.id, detail={"username": user.username})
     db.commit()
     return {"ok": True, "username": user.username, "active": False}
+
+
+# ------------------------------------------------------- dashboard aggregates
+@router.get("/analytics/dashboard")
+def analytics_dashboard(days: int = Query(14, ge=7, le=90),
+                        db: Session = Depends(get_session),
+                        principal: Principal = Depends(require_admin)):
+    """One call for the Overview page: KPIs, distributions, trends, recents."""
+    now = datetime.utcnow()
+    rows = db.query(Complaint).all()
+    start = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    status_counts = Counter(c.status for c in rows)
+    priority_counts = Counter((c.severity or "Medium").title() for c in rows)
+
+    trend = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        created = sum(1 for c in rows if c.created_at and c.created_at.date() == day.date())
+        resolved = sum(1 for c in rows if c.resolved_at and c.resolved_at.date() == day.date())
+        trend.append({"date": day.strftime("%Y-%m-%d"), "created": created, "resolved": resolved})
+
+    departments = []
+    for dept in db.query(Department).order_by(Department.code).all():
+        dept_rows = [c for c in rows if c.department_id == dept.id]
+        departments.append({
+            "department_id": dept.id, "department": dept.name, "code": dept.code,
+            "total": len(dept_rows),
+            "open": sum(1 for c in dept_rows if c.status in OPEN_STATUSES),
+            "resolved": sum(1 for c in dept_rows if c.status in ("RESOLVED", "VERIFIED", "CLOSED")),
+            "overdue": sum(1 for c in dept_rows if c.status in OPEN_STATUSES
+                           and c.escalation_due_at and c.escalation_due_at < now),
+        })
+
+    recent = sorted(rows, key=lambda c: c.created_at or now, reverse=True)[:6]
+
+    recent_escalations = []
+    for esc in (db.query(EscalationHistory)
+                .order_by(EscalationHistory.created_at.desc()).limit(6).all()):
+        complaint = db.get(Complaint, esc.complaint_id)
+        recent_escalations.append({
+            "complaint_id": esc.complaint_id,
+            "ticket_ref": complaint.ticket_ref if complaint else "-",
+            "from_level": esc.from_level, "to_level": esc.to_level,
+            "reason": esc.reason, "automatic": esc.automatic,
+            "at": _iso(esc.created_at),
+        })
+
+    critical = [c for c in rows if c.status in OPEN_STATUSES
+                and (c.severity or "").title() in ("High", "Critical")]
+    critical.sort(key=lambda c: c.escalation_due_at or now)
+
+    return {
+        "kpis": {
+            "total": len(rows),
+            "new": status_counts.get("NEW", 0),
+            "pending": sum(1 for c in rows if c.status in OPEN_STATUSES),
+            "in_progress": status_counts.get("IN_PROGRESS", 0),
+            "resolved": sum(1 for c in rows if c.status in ("RESOLVED", "VERIFIED", "CLOSED")),
+            "overdue": sum(1 for c in rows if c.status in OPEN_STATUSES
+                           and c.escalation_due_at and c.escalation_due_at < now),
+            "escalated": sum(1 for c in rows if (c.escalation_count or 0) > 0),
+            "needs_review": status_counts.get("NEEDS_REVIEW", 0),
+            "unacknowledged": sum(1 for c in rows if c.status in OPEN_STATUSES
+                                  and c.acknowledged_at is None),
+            "reopened": sum(1 for c in rows if (c.reopened_count or 0) > 0),
+            "officers": db.query(func.count(Officer.id)).filter(Officer.active.is_(True)).scalar() or 0,
+        },
+        "status_distribution": [{"status": k, "count": v} for k, v in status_counts.items()],
+        "priority_distribution": [{"priority": k, "count": v} for k, v in priority_counts.items()],
+        "trend": trend,
+        "departments": departments,
+        "recent": [complaint_out(db, c) for c in recent],
+        "recent_escalations": recent_escalations,
+        "critical": [complaint_out(db, c) for c in critical[:8]],
+    }
+
+
+@router.get("/analytics/trends")
+def analytics_trends(months: int = Query(6, ge=1, le=24),
+                     db: Session = Depends(get_session),
+                     principal: Principal = Depends(require_admin)):
+    """Monthly created vs resolved, for the Reports page."""
+    now = datetime.utcnow()
+    rows = db.query(Complaint).all()
+    series = []
+    for offset in range(months - 1, -1, -1):
+        month = (now.replace(day=1) - timedelta(days=offset * 30)).strftime("%Y-%m")
+        created = sum(1 for c in rows if c.created_at and c.created_at.strftime("%Y-%m") == month)
+        resolved = sum(1 for c in rows if c.resolved_at and c.resolved_at.strftime("%Y-%m") == month)
+        series.append({"month": month, "created": created, "resolved": resolved})
+    return series
+
+
+@router.get("/analytics/wards")
+def analytics_wards(db: Session = Depends(get_session),
+                    principal: Principal = Depends(require_admin)):
+    """Ward/area level distribution (ward field, falling back to area)."""
+    rows = db.query(Complaint).all()
+    buckets = {}
+    for c in rows:
+        key = (c.ward or "").strip() or (c.area or "").strip() or "Unassigned"
+        entry = buckets.setdefault(key, {"ward": key, "total": 0, "open": 0,
+                                         "resolved": 0, "overdue": 0})
+        entry["total"] += 1
+        if c.status in OPEN_STATUSES:
+            entry["open"] += 1
+            if c.escalation_due_at and c.escalation_due_at < datetime.utcnow():
+                entry["overdue"] += 1
+        if c.status in ("RESOLVED", "VERIFIED", "CLOSED"):
+            entry["resolved"] += 1
+    return sorted(buckets.values(), key=lambda r: r["total"], reverse=True)
+
+
+# ------------------------------------------------------- resolution verification
+@router.get("/verifications")
+def verification_queue(verdict: Optional[str] = Query(None, pattern="^(verified|requires_review|failed)$"),
+                       limit: int = Query(100, ge=1, le=300),
+                       db: Session = Depends(get_session),
+                       principal: Principal = Depends(require_admin)):
+    """Resolved complaints awaiting/needing human confirmation of the fix."""
+    query = db.query(Complaint).filter(
+        Complaint.status.in_(("RESOLVED", "VERIFIED", "CLOSED", "REOPENED")))
+    if verdict:
+        query = query.filter(Complaint.resolution_verification == verdict)
+    rows = query.order_by(Complaint.resolved_at.desc().nullslast()).limit(limit).all()
+
+    items = []
+    for complaint in rows:
+        has_after = (db.query(func.count(ComplaintImage.id))
+                     .filter(ComplaintImage.complaint_id == complaint.id,
+                             ComplaintImage.kind == "resolution").scalar() or 0) > 0
+        items.append({**complaint_out(db, complaint, detail=True),
+                      "has_resolution_image": has_after})
+    return items
+
+
+@router.post("/complaints/{complaint_id}/verification")
+def decide_verification(complaint_id: str, payload: VerificationIn,
+                        db: Session = Depends(get_session),
+                        principal: Principal = Depends(require_admin)):
+    """Admin decision on an AI (or missing) before/after verdict."""
+    complaint = _complaint(db, complaint_id)
+
+    if payload.action == "approve":
+        complaint.resolution_verification = "verified"
+        if complaint.status != "CLOSED":
+            complaint.status = "VERIFIED"
+        escalation.add_history(db, complaint, "verification_approved", actor_type="admin",
+                               actor_id=principal.username, note=payload.note)
+    elif payload.action == "request_review":
+        complaint.resolution_verification = "requires_review"
+        escalation.add_history(db, complaint, "verification_manual_review",
+                               actor_type="admin", actor_id=principal.username,
+                               note=payload.note)
+    elif payload.action == "reject":
+        complaint.resolution_verification = "failed"
+        service.reopen(db, complaint, reason=payload.note or "Resolution rejected by administrator",
+                       actor_type="admin", actor_id=principal.username)
+    else:
+        service.reopen(db, complaint, reason=payload.note or "Reopened by administrator",
+                       actor_type="admin", actor_id=principal.username)
+
+    log_action(db, "complaint.verification_decision", actor_type="admin",
+               actor_id=principal.username, entity="complaint", entity_id=complaint.id,
+               detail={"action": payload.action, "note": payload.note})
+    db.commit()
+    return complaint_out(db, complaint, detail=True)
+
+
+@router.get("/security-status")
+def security_status(db: Session = Depends(get_session),
+                    principal: Principal = Depends(require_superadmin)):
+    """Surfaces insecure defaults so they can be fixed before a public rollout."""
+    from auth import _DEFAULT_ADMIN_PASSWORD, _DEFAULT_SECRET_KEY
+    from config import get_env
+    from core.db import DATABASE_URL
+    from core.models import AdminUser as AdminUserModel
+    from core.security import SECRET_KEY
+
+    admins = (db.query(func.count(AdminUserModel.id))
+              .filter(AdminUserModel.active.is_(True)).scalar() or 0)
+
+    return {
+        "secret_key_is_default": SECRET_KEY == _DEFAULT_SECRET_KEY,
+        "admin_password_is_default": get_env("ADMIN_PASSWORD", _DEFAULT_ADMIN_PASSWORD) == _DEFAULT_ADMIN_PASSWORD,
+        "bypass_login": get_env("BYPASS_LOGIN", "false").lower() in ("1", "true", "yes", "on"),
+        "database": "postgresql" if "postgres" in DATABASE_URL else "sqlite (ephemeral!)",
+        "database_url_set": bool(get_env("DATABASE_URL")),
+        "scheduler_enabled": get_env("ENABLE_ESCALATION_SCHEDULER", "true").lower()
+                             not in ("0", "false", "no", "off"),
+        "tick_seconds": int(get_env("ESCALATION_TICK_SECONDS", "300")),
+        "openrouter_key_set": bool(get_env("OPENROUTER_API_KEY")),
+        "telegram_token_set": bool(get_env("TELEGRAM_BOT_TOKEN")),
+        "active_admins": admins,
+    }
+
+
+@router.post("/admins/me/password")
+def change_own_password(payload: PasswordChangeIn, db: Session = Depends(get_session),
+                        principal: Principal = Depends(require_admin)):
+    from core.models import AdminUser as AdminUserModel
+    from core.security import hash_password, verify_password
+
+    user = (db.query(AdminUserModel)
+            .filter(AdminUserModel.username == principal.username).one_or_none())
+    if not user:
+        raise HTTPException(400, "This account comes from environment variables, not the "
+                                 "database - change ADMIN_PASSWORD instead.")
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(400, "Current password is incorrect")
+    user.password_hash = hash_password(payload.new_password)
+    log_action(db, "admin.password_changed", actor_type="admin", actor_id=user.username,
+               entity="admin_user", entity_id=user.id)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/analytics/officer-performance")
+def analytics_officer_performance(db: Session = Depends(get_session),
+                                  principal: Principal = Depends(require_admin)):
+    """Officer workload + quality metrics, including citizen ratings."""
+    now = datetime.utcnow()
+    rows = []
+    for officer in db.query(Officer).order_by(Officer.level, Officer.full_name).all():
+        complaints = db.query(Complaint).filter(
+            Complaint.assigned_officer_id == officer.id).all()
+        done = [c for c in complaints if c.resolved_at]
+        acks = [(c.acknowledged_at - c.created_at).total_seconds()
+                for c in complaints if c.acknowledged_at]
+        ratings = [f.rating for f in
+                   db.query(CitizenFeedback)
+                   .join(Complaint, CitizenFeedback.complaint_id == Complaint.id)
+                   .filter(Complaint.assigned_officer_id == officer.id,
+                           CitizenFeedback.rating.isnot(None)).all()]
+        dept = db.get(Department, officer.department_id) if officer.department_id else None
+        rows.append({
+            "officer_id": officer.id, "officer": officer.full_name,
+            "designation": officer.designation, "level": officer.level,
+            "department": dept.name if dept else None, "active": officer.active,
+            "assigned": len(complaints),
+            "open": sum(1 for c in complaints if c.status in OPEN_STATUSES),
+            "resolved": len(done),
+            "overdue": sum(1 for c in complaints if c.status in OPEN_STATUSES
+                           and c.escalation_due_at and c.escalation_due_at < now),
+            "escalated": sum(1 for c in complaints if (c.escalation_count or 0) > 0),
+            "escalation_rate": (round(sum(1 for c in complaints
+                                          if (c.escalation_count or 0) > 0)
+                                      / len(complaints) * 100, 1) if complaints else 0.0),
+            "reopened": sum(1 for c in complaints if (c.reopened_count or 0) > 0),
+            "avg_ack_hours": round(sum(acks) / len(acks) / 3600, 2) if acks else None,
+            "avg_resolution_hours": (round(sum((c.resolved_at - c.created_at).total_seconds()
+                                               / 3600 for c in done) / len(done), 2)
+                                     if done else None),
+            "avg_rating": round(sum(ratings) / len(ratings), 2) if ratings else None,
+            "ratings_count": len(ratings),
+        })
+    return rows
+
+
+
 
 
 

@@ -46,7 +46,13 @@ def get_rule(db: Session, department_id: Optional[str], category_id: Optional[st
                 .first())
         if rule:
             return rule
-    return EscalationRule(department_id=department_id or "", category_id=category_id)
+    # Nothing in the database yet: return a fully-populated in-memory default
+    # (column defaults are only applied on INSERT, so they must be explicit).
+    return EscalationRule(department_id=department_id or "", category_id=category_id,
+                          ack_hours=12, action_hours=24, l1_hours=48, l2_hours=24,
+                          l3_hours=24, l4_hours=48, reminder_hours=6,
+                          working_days=[0, 1, 2, 3, 4, 5], holidays=[])
+
 
 
 def _is_working_day(day, rule: EscalationRule) -> bool:
@@ -104,13 +110,17 @@ def notify_citizen(db: Session, complaint: Complaint, headline: str, kind: str,
 def assign(db: Session, complaint: Complaint, officer: Optional[Officer], *,
            actor_type: str = "system", actor_id: str = "", reason: str = "") -> Complaint:
     """Assign/reassign a complaint, start its TAT and notify the officer."""
-    rule = get_rule(db, complaint.department_id, complaint.category_id)
     dept_name, cat_name = dept_category_names(db, complaint)
     previous_officer_id = complaint.assigned_officer_id
+
 
     complaint.assigned_officer_id = officer.id if officer else None
     if officer:
         complaint.level = officer.level
+        # An unclassified complaint adopts the department of the officer who
+        # takes it, so the department/TAT policy applies from now on.
+        if complaint.department_id is None and officer.department_id:
+            complaint.department_id = officer.department_id
 
     if officer is None:
         # Nobody configured for this sector/level - never assign randomly.
@@ -123,9 +133,18 @@ def assign(db: Session, complaint: Complaint, officer: Optional[Officer], *,
         db.commit()
         return complaint
 
-    if complaint.acknowledged_at is None:
+    # Assignment always leaves the review/unassigned states; it must not
+    # regress a complaint that is already acknowledged or in progress.
+    if complaint.status in ("NEW", "NEEDS_REVIEW", "REOPENED", "ASSIGNED") \
+            or complaint.acknowledged_at is None:
         complaint.status = "ASSIGNED"
+
+    # Read the TAT policy *after* a possibly-adopted department so the right
+    # department rule applies, then compute the deadline.
+    rule = get_rule(db, complaint.department_id, complaint.category_id)
+    dept_name, cat_name = dept_category_names(db, complaint)
     complaint.escalation_due_at = deadline_for(rule, officer.level)
+
     complaint.reminder_sent_at = None
     add_history(db, complaint, "assigned", actor_type=actor_type, actor_id=actor_id,
                 to_level=officer.level, note=reason or f"Assigned to {officer.full_name}")

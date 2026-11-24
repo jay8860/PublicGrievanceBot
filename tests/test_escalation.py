@@ -1,5 +1,5 @@
 """TAT engine: automatic L1->L4 escalation, dedupe, reminders, no auto-close."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from core import escalation, service
 from core.models import Complaint, EscalationHistory, Notification, Officer
@@ -115,7 +115,29 @@ def test_paused_sla_is_not_escalated_and_resume_shifts_deadline(db):
     assert complaint.escalation_due_at is not None
 
 
-def test_manual_escalation_is_recorded(db):
+def test_manual_assignment_leaves_needs_review(db):
+    """Regression: legacy rows carry acknowledged_at, so assignment must still
+    move a NEEDS_REVIEW complaint to ASSIGNED (and adopt the department)."""
+    depts = ensure_seed(db)
+    municipal = depts["MUNICIPAL"]
+    officer = Officer(full_name="Municipal L1", department_id=municipal.id, level=1,
+                      jurisdiction_type="district", active=True, available=True)
+    db.add(officer)
+    complaint = Complaint(ticket_ref="GRV-TEST-000777", citizen_chat_id="legacy",
+                          status="NEEDS_REVIEW", level=1,
+                          acknowledged_at=datetime.utcnow())
+    db.add(complaint)
+    db.commit()
+
+    escalation.assign(db, complaint, officer, actor_type="admin", actor_id="tester",
+                      reason="manual")
+    db.refresh(complaint)
+
+    assert complaint.status == "ASSIGNED"
+    assert complaint.department_id == municipal.id          # adopted from the officer
+    assert complaint.assigned_officer_id == officer.id
+    assert complaint.escalation_due_at is not None
+
     _, officers = _pwd_with_l1_to_l4(db)
     complaint = _new_complaint(db)
     rule = escalation.get_rule(db, complaint.department_id, complaint.category_id)

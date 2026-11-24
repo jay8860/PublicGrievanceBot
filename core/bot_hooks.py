@@ -94,10 +94,14 @@ def resolve_from_officer(chat_id, ticket_ref: str, after_file_id: str) -> str:
         result = service.resolve(db, complaint, officer=officer, after_file_id=after_file_id,
                                  notes="resolved from Telegram", actor_type="officer",
                                  actor_id=officer.id, run_verification=True)
+        if result.get("auto_approved"):
+            return "✅ Photo check passed. Resolution auto-approved; the citizen has been asked to confirm."
         verdict = (result.get("verification") or {}).get("verdict")
         if verdict:
-            return f"🧪 AI verification: <b>{verdict.replace('_', ' ').title()}</b>"
-        return ""
+            return (f"🧪 Photo check result: <b>{verdict.replace('_', ' ').title()}</b>. "
+                    "Sent to Resolution Verification for a decision.")
+        return "📋 Sent to Resolution Verification (photo check unavailable)."
+
     except Exception as exc:
         logger.error("Platform resolution failed: %s", exc)
         return ""

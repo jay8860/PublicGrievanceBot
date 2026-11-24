@@ -23,7 +23,8 @@ keep working unchanged; everything below is **additive**.
 | **Telegram officer actions** | Inline buttons Accept / In Progress / Submit Resolution / View Details / Escalate, all validated server-side against the officer's department + level. The bot is only transport — the database is the source of truth. |
 | **Complaint lifecycle** | NEW → ASSIGNED → ACKNOWLEDGED → IN_PROGRESS → (ESCALATED) → RESOLVED → citizen confirm → CLOSED; `REOPENED` keeps full history; `NEEDS_REVIEW` for unclassified/unroutable complaints. |
 | **SLA pause/resume** | Documented reason + actor stored; on resume the deadline shifts by the paused duration. |
-| **Before/after AI verification** | On resolution the backend fetches the original Telegram photo + the after photo, asks OpenRouter for `{same_location, issue_addressed, confidence, verdict}`, applies guard rails (verified only if same location **and** confidence ≥ 0.7) and stores `verified` / `requires_review` / `failed`. It never auto-approves; failures degrade to manual review. |
+| **Before/after AI verification** | On resolution the backend fetches the original Telegram photo + the after photo and asks OpenRouter for `{same_location, issue_addressed, confidence, verdict}` with guard rails (verified only if same location **and** confidence ≥ 0.7). **Verified → auto-approved** (status `VERIFIED`, logged as `verification_auto_approved` by `ai-verifier`, citizen told it was photo-verified). Anything the AI can't decide — no key, network/JSON error, missing photo, different location, issue still visible — stays `RESOLVED` and lands in the **Resolution Verification** queue for a human. `AUTO_APPROVE_AI_RESOLUTION=false` disables the automatic step. |
+
 | **Citizen feedback / reopening** | Confirm (→ CLOSED) or "still broken" (→ REOPENED, TAT restarts at L1, full history preserved). |
 | **Duplicate grouping** | Same category + ≤ 500 m + ≤ 72 h → linked into one `group_id`. Every citizen submission is preserved (nothing discarded). |
 | **Audit logging** | Every privileged mutation writes `audit_logs` (actor, action, entity, detail). |
@@ -34,20 +35,19 @@ keep working unchanged; everything below is **additive**.
 
 ### Deliberately NOT done yet (do not assume these exist)
 
-1. **React screens for the new modules** (Departments / Officers / Escalation Centre /
-   Reports). All endpoints are live and tested, but the dashboard UI still shows the
-   original map/list view — no dead buttons were added; the new screens simply are
-   not built yet.
-2. **PostgreSQL is supported but not provisioned.** Without `DATABASE_URL` the app
+1. **PostgreSQL is supported but not provisioned.** Without `DATABASE_URL` the app
    uses a SQLite file inside the container, which is **wiped on every deploy**.
-3. **Object storage (S3/GCS)** — photos are still referenced by Telegram `file_id`;
+2. **Object storage (S3/GCS)** — photos are still referenced by Telegram `file_id`;
    AI verification downloads them on demand.
-4. **Redis/BullMQ** — scheduling uses APScheduler in-process + `worker.py`
+3. **Redis/BullMQ** — scheduling uses APScheduler in-process + `worker.py`
    (safe on one node because escalations are deduplicated in the DB).
-5. **Hindi/Chhattisgarhi bot copy**, multi-photo complaints, ward-boundary polygons,
+4. **Hindi/Chhattisgarhi bot copy**, multi-photo complaints, ward-boundary polygons,
    perceptual-hash image dedupe.
-6. **Officer dashboard login** (JWT with `role=officer`) — RBAC primitives exist, but
+5. **Officer dashboard login** (JWT with `role=officer`) — RBAC primitives exist, but
    officers currently act through Telegram only.
+6. **Automated browser E2E (Playwright)** — page renders + every backend workflow are
+   tested (see §9), but there is no headless-browser suite in the repo yet.
+
 
 
 ---
@@ -107,6 +107,7 @@ Google Sheets is untouched — nothing is deleted or rewritten there.
 | `TICKET_PREFIX` | `GRV` | Human ticket prefix (`GRV-2026-000001`). |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | Dashboard/officer JWT lifetime. |
 | `OPENROUTER_TIMEOUT_SECONDS` | `60` | Backend AI timeout (verification). |
+| `AUTO_APPROVE_AI_RESOLUTION` | `true` | AI-verified resolutions close themselves (status `VERIFIED`). `false` sends every resolution to the manual queue. |
 
 Existing variables are unchanged (`TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`,
 `OPENROUTER_MODEL`, `GOOGLE_SHEETS_CREDENTIALS`, `ADMIN_USERNAME`,
@@ -137,6 +138,13 @@ All legacy endpoints are unchanged. New, under `/api/v2` (Bearer JWT):
 | `GET /reports/complaints?format=csv\|xlsx` | admin | Export |
 | `GET /audit-logs` | admin | Audit trail |
 | `GET/POST /admins`, `POST /admins/{id}/deactivate` | superadmin | Individual admin accounts |
+| `GET /analytics/dashboard` | admin | Overview KPIs, trend, distributions, recents, critical list |
+| `GET /analytics/trends`, `GET /analytics/wards` | admin | Monthly and ward-level analytics |
+| `GET /analytics/officer-performance` | admin | Officer scorecard including citizen ratings |
+| `GET /verifications`, `POST /complaints/{id}/verification` | admin | Verification queue + approve/reject/review/reopen |
+| `GET /security-status` | superadmin | Live security/config panel for Settings |
+| `POST /admins/me/password` | any admin | Change own password |
+
 
 `POST /api/login` now returns `{access_token, token_type, role}` and accepts both
 individual admin accounts and the legacy `ADMIN_USERNAME`/`ADMIN_PASSWORD`.
@@ -168,8 +176,41 @@ individual admin accounts and the legacy `ADMIN_USERNAME`/`ADMIN_PASSWORD`.
   `routers/admin.py`, `core/*.py`, `migrate_sheets_to_db.py`; `import api` and
   `import bot` both succeed.
 
-Not covered by automated tests (needs live Telegram + OpenRouter keys): real
-callback-button round trips, real verification verdicts, and the Railway smoke test.
+**Frontend verification (performed on this machine)**
+
+- `vite build` → **success**, 2,280 modules, `dist/assets/index-5ED9uaYf.js` 892 kB
+  (254 kB gzip) + 42.7 kB CSS. No runtime dependency was added.
+- **Page render smoke test** (`dashboard/ssr-smoke.jsx`, built with `vite build --ssr`):
+  all **10 non-map pages render without errors** ("ALL 10 PAGE RENDERS PASSED").
+  The map page needs a real DOM, so it is covered by the build + API contract only.
+- **Dev server**: `vite --port 5199` served `/` (200), `/src/main.jsx` (200) and
+  `/src/pages/Officers.jsx` (200), i.e. every page transforms cleanly in dev mode.
+- **Prop guard** (`node checks/component-props.mjs`): fails if a page renders
+  `token` or `onNavigate` without destructuring it. This caught a real crash —
+  `Complaints` rendered `<ComplaintDrawer token={token} />` although the component
+  took no props (the earlier smoke test missed it because the page returned its
+  loading state before reaching that JSX). Now passes on the fixed tree.
+- **Complaints regression render** (`checks/ssr-complaints.jsx`, mocked rows):
+  `OK: Complaints rendered with data (13295 chars)`. Reverting the signature makes it
+  fail with the original `token is not defined`, so the same crash cannot return
+  unnoticed. Page-level render errors are also contained by `ErrorBoundary`.
+
+- **End-to-end workflow test** (`scripts/e2e_dashboard.py`, run against the local API
+  with the demo dataset) exercised exactly what the UI calls:
+  login → me → departments → categories → **create officer** → **invitation code** →
+  code history → **assign** (NEEDS_REVIEW → ASSIGNED) → **acknowledge** (ACKNOWLEDGED)
+  → **in progress** (IN_PROGRESS) → **escalate** (L2) → verify queue →
+  **approve verification** (VERIFIED) → dashboard/performance/wards/trends/centre/geo
+  analytics → **CSV export** (1,769 B) → **XLSX export** (6,249 B, valid zip) →
+  **audit log** (9 entries) → **security status** → **wrong-password rejection** (400).
+- Two real defects were found by these tests and fixed: assignment left a
+  `NEEDS_REVIEW` complaint unchanged when it carried an `acknowledged_at`
+  (regression test added), and the fallback TAT rule had `None` hours before being
+  flushed (assignment of an unclassified complaint crashed).
+
+Not covered: real Telegram callback round trips, live OpenRouter verdicts, and the
+Railway smoke test (needs the deployed bot token + AI key). No headless-browser
+screenshot suite is included; the walkthrough in §9 describes each screen.
 
 ---
 
@@ -216,6 +257,61 @@ callback-button round trips, real verification verdicts, and the Railway smoke t
 4. **Replace the default admin password** (`admin123`) and set a strong `SECRET_KEY`;
    create one account per administrator (`POST /api/v2/admins`).
 5. **Keep `BYPASS_LOGIN=false`** in production.
-6. **Dashboard UI** for the new modules still has to be built (APIs are ready).
+6. Review the new portal with real data (`python scripts/seed_demo.py` seeds a demo dataset).
+
+---
+
+## 9. Frontend — District Grievance Management portal
+
+The dashboard was rebuilt (React 18 + Vite + Tailwind, no new runtime dependencies)
+as a sidebar admin portal. The visual direction — a warm-paper **district register**
+with one ink-navy accent, hairline rules, serif page titles, mono ticket references
+and tabular figures — is written down in `dashboard/DESIGN.md`; the Tailwind theme
+(`dashboard/tailwind.config.js`) carries the neutral ramps, radii, type stack and
+shadow scale so the direction is enforced, not improvised per screen.
+**11 working pages**, all wired to `/api/v2`:
+
+
+| Page | What it does | Backing endpoints |
+|---|---|---|
+| **Overview** | 8 KPI tiles, created-vs-resolved trend, status donut, department bar chart, recent complaints/escalations, critical list | `/analytics/dashboard` |
+| **Complaints** | Search + 7 filters, sortable paginated table with photos, complaint drawer (evidence, map link, AI fields, history, escalation timeline, feedback) and actions: assign / acknowledge / progress / escalate / pause / resume / resolve / reopen | `/complaints`, `/complaints/{id}`, `/officers`, action endpoints |
+| **Departments** | 5 department cards with live counts, edit, category manager (add/list), TAT policy editor (hours, working days, holidays), officer roster | `/departments`, `/categories`, `/escalation-rules` |
+| **Officer Management** | Officer table (ID, name, designation, department, L1–L4, jurisdiction, Telegram state, pending, status), add/edit form (mobile, email, reporting officer, jurisdiction), invitation-code modal with copy + expiry, revoke Telegram, activate/deactivate, and a visual L1–L4 hierarchy per department | `/officers`, `/officers/{id}/invitation`, `/revoke-telegram`, `/codes` |
+| **Escalation Centre** | Tabs for L1/L2/L3/L4 pending + overdue / unacknowledged / reopened / needs-review, department + priority filters, manual escalate | `/escalation-centre`, `/complaints/{id}/escalate` |
+| **Geographic Monitoring** | Leaflet map with severity-coloured markers, grid clustering, density overlay, ward hotspot list, department/severity/status/level filters, popup → drawer | `/analytics/geo`, `/analytics/wards` |
+| **Resolution Verification** | Before/after image comparison, AI verdict badge, citizen feedback, approve / reject / manual review / reopen with an audit note | `/verifications`, `/complaints/{id}/verification` |
+| **Officer Performance** | Workload chart, scorecard (assigned/resolved/pending/overdue, ack time, resolution time, escalation rate, ★ rating), department + level filters | `/analytics/officer-performance` |
+| **Reports & Analytics** | Dept/date export (CSV + Excel), KPI summary, monthly trend, ward chart, department table | `/reports/complaints`, `/analytics/trends`, `/analytics/wards`, `/analytics/overview` |
+| **Audit Logs** | Searchable trail with action, record, actor, source (Dashboard/Officer/Citizen/System) and detail snapshot | `/audit-logs` |
+| **Settings** | Own account + password change, system/security flags (DB, secret default, default password, bypass, scheduler, tokens), administrator accounts (create/deactivate, superadmin only) | `/me`, `/admins/me/password`, `/security-status`, `/admins` |
+
+**Frontend architecture**
+
+```
+dashboard/src/
+  App.jsx                  hash router + auth gate + role guard + layout
+  lib/                     utils (JWT decode, dates, TAT labels), nav definition
+  services/apiV2.js        single API layer (reuses the existing axios instance)
+  hooks/                    useFetch (loading/error/reload), useConfirmDialog
+  components/              Layout(sidebar+header), ErrorBoundary, ui (cards/badges),
+                           controls, overlays (modal/confirm/tabs/pagination),
+                           DataTable, Charts (recharts), Toast, ComplaintDrawer,
+                           ComplaintMap, ImageCompare, feedback states
+  checks/                  component-props.mjs (prop guard), ssr-complaints.jsx
+                           (page regression render with mocked data)
+  pages/                   11 pages listed above
+```
+
+* Every page implements loading, empty and error states; mutations show toasts and
+  refresh their data; destructive actions require a confirmation dialog.
+* A page-level `ErrorBoundary` keeps a render error inside the content area instead
+  of blanking the portal.
+
+* Role-based UI: viewers see read-only pages and no admin sections; superadmin-only
+  settings render a clear notice for other roles.
+* Images are fetched with the JWT (existing `AuthImage`), never as bare URLs.
+* No mock data and no dead buttons: every control calls a real endpoint.
+
 
 

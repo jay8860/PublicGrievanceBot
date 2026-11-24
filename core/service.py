@@ -1,5 +1,6 @@
 """Complaint lifecycle + officer invitations (single place both the bot and the
 HTTP API call into, so Telegram and the dashboard can never disagree)."""
+import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta
@@ -11,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from config import get_env
 
-from . import escalation, notify, verify
+from . import escalation, media, notify, verify
+
 from .audit import log_action
 from .geo import find_duplicate_group
 from .models import (Category, CitizenFeedback, Complaint, ComplaintHistory,
@@ -49,7 +51,40 @@ def resolve_category(db: Session, label: Optional[str]) -> Optional[Category]:
             .first())
 
 
+def _archive_image(db: Session, complaint: Complaint, kind: str, data: Optional[bytes],
+                   telegram_file_id: str = "", row: Optional[ComplaintImage] = None) -> str:
+    """Copy photo bytes onto the media volume and link them to the complaint.
+
+    Idempotent per (complaint, kind): an existing row is updated in place, so a
+    photo can be backfilled later (e.g. an old ticket whose original still only
+    lives on Telegram). Returns the stored key, or "" when archiving is off.
+    """
+    if not data or not media.enabled():
+        return ""
+
+    key = media.save_photo(data, complaint.ticket_ref, kind)
+    if not key:
+        return ""
+
+    if row is None:
+        row = (db.query(ComplaintImage)
+               .filter(ComplaintImage.complaint_id == complaint.id,
+                       ComplaintImage.kind == kind)
+               .order_by(ComplaintImage.created_at.desc())
+               .first())
+    if row is None:
+        row = ComplaintImage(complaint_id=complaint.id, kind=kind,
+                             sha256=hashlib.sha256(data).hexdigest())
+        db.add(row)
+    row.storage_key = key
+    if telegram_file_id and not row.telegram_file_id:
+        row.telegram_file_id = telegram_file_id
+    return key
+
+
+
 def create_complaint(db: Session, *, citizen_chat_id, description: str = "",
+
                      category_label: Optional[str] = None, severity: str = "Medium",
                      lat: Optional[float] = None, lon: Optional[float] = None,
                      accuracy_m: Optional[float] = None, pincode: str = "",
@@ -88,9 +123,18 @@ def create_complaint(db: Session, *, citizen_chat_id, description: str = "",
         db.add(complaint)
         db.flush()
 
+    # Archive the citizen's photo while Telegram still has it: file_ids expire
+    # and break when the bot token is rotated. No-op without MEDIA_ROOT.
+    photo_data = photo_bytes
+    if photo_data is None and photo_file_id and media.enabled():
+        photo_data = _telegram_photo_bytes(photo_file_id)
+    photo_key = media.save_photo(photo_data, complaint.ticket_ref, "original") if photo_data else ""
+
     db.add(ComplaintImage(complaint_id=complaint.id, kind="original",
                           telegram_file_id=photo_file_id or "",
-                          storage_key="", url=""))
+                          storage_key=photo_key,
+                          sha256=hashlib.sha256(photo_data).hexdigest() if photo_data else "",
+                          url=""))
     escalation.add_history(db, complaint, "created", actor_type="citizen",
                            actor_id=str(citizen_chat_id), note="Complaint submitted")
     log_action(db, "complaint.create", actor_type="citizen", actor_id=str(citizen_chat_id),
@@ -168,22 +212,35 @@ def _telegram_photo_bytes(file_id: str) -> Optional[bytes]:
         return None
 
 
+def _auto_approve_enabled() -> bool:
+    """AI-verified resolutions close themselves unless this is switched off."""
+    return get_env("AUTO_APPROVE_AI_RESOLUTION", "true").lower() not in ("0", "false", "no", "off")
+
+
 def resolve(db: Session, complaint: Complaint, *, officer: Optional[Officer] = None,
             after_bytes: Optional[bytes] = None, after_file_id: str = "",
             notes: str = "", actor_type: str = "officer", actor_id: str = "",
             run_verification: bool = True) -> dict:
-    """Officer submits an after-resolution photo -> AI verdict + citizen notice."""
-    import hashlib
+    """Officer submits an after-resolution photo.
 
+    The photo check decides the outcome:
+      * AI confirms the same place and the issue gone  -> auto-approved (VERIFIED)
+      * AI unavailable / unsure / failed / no photos   -> stays RESOLVED and waits
+        in Resolution Verification for a human decision.
+    """
     complaint.status = "RESOLVED"
     complaint.resolved_at = datetime.utcnow()
     complaint.escalation_due_at = None
     complaint.resolution_notes = notes or complaint.resolution_notes
 
+    after_row = None
     if after_bytes or after_file_id:
-        db.add(ComplaintImage(complaint_id=complaint.id, kind="resolution",
-                              telegram_file_id=after_file_id or "",
-                              sha256=hashlib.sha256(after_bytes).hexdigest() if after_bytes else ""))
+        after_row = ComplaintImage(complaint_id=complaint.id, kind="resolution",
+                                   telegram_file_id=after_file_id or "",
+                                   sha256=hashlib.sha256(after_bytes).hexdigest() if after_bytes else "")
+        db.add(after_row)
+        _archive_image(db, complaint, "resolution", after_bytes, after_file_id or "", row=after_row)
+
 
     actor = actor_id or (officer.id if officer else "")
     escalation.add_history(db, complaint, "resolved", actor_type=actor_type,
@@ -194,6 +251,9 @@ def resolve(db: Session, complaint: Complaint, *, officer: Optional[Officer] = N
     db.commit()
 
     verdict = None
+    auto_approved = False
+    pending_reason = ""
+
     if run_verification:
         original_row = (db.query(ComplaintImage)
                         .filter(ComplaintImage.complaint_id == complaint.id,
@@ -201,25 +261,67 @@ def resolve(db: Session, complaint: Complaint, *, officer: Optional[Officer] = N
         original = (_telegram_photo_bytes(original_row.telegram_file_id)
                     if original_row and original_row.telegram_file_id else None)
         after = after_bytes or (_telegram_photo_bytes(after_file_id) if after_file_id else None)
+
+        # Backfill the archive: old tickets (and bot-token rotations) may only
+        # have a Telegram file_id, but the bytes are in hand right here.
+        if original:
+            _archive_image(db, complaint, "original", original,
+                           original_row.telegram_file_id if original_row else "")
+        if after:
+            _archive_image(db, complaint, "resolution", after, after_file_id or "",
+                           row=after_row)
+
         if original and after:
             category = db.get(Category, complaint.category_id) if complaint.category_id else None
             verdict = verify.verify_resolution(original, after, complaint.description,
-                                              category.name if category else "")
+                                               category.name if category else "")
             complaint.resolution_verification = verdict["verdict"]
             log_action(db, "complaint.verification", entity="complaint",
                        entity_id=complaint.id, detail=verdict)
+
+            if verdict["verdict"] == "verified" and _auto_approve_enabled():
+                auto_approved = True
+                complaint.status = "VERIFIED"
+                escalation.add_history(
+                    db, complaint, "verification_auto_approved", actor_type="system",
+                    actor_id="ai-verifier",
+                    note=(f"confidence {float(verdict.get('confidence') or 0):.2f} · "
+                          f"{verdict.get('evidence') or 'issue no longer visible'}")[:250])
+                log_action(db, "complaint.verification_auto", actor_type="system",
+                           actor_id="ai-verifier", entity="complaint",
+                           entity_id=complaint.id, detail=verdict)
+            else:
+                pending_reason = (verdict.get("error") or verdict.get("evidence")
+                                  or f"AI verdict: {verdict['verdict']}")
+                escalation.add_history(db, complaint, "verification_pending",
+                                       actor_type="system", actor_id="ai-verifier",
+                                       note=pending_reason[:250])
         else:
             complaint.resolution_verification = "requires_review"
+            pending_reason = "Original or after photo unavailable for comparison"
+            escalation.add_history(db, complaint, "verification_pending",
+                                   actor_type="system", actor_id="ai-verifier",
+                                   note=pending_reason)
         db.commit()
 
-    notify.send(db, chat_id=complaint.citizen_chat_id, kind="citizen_resolved",
-                complaint_id=complaint.id,
-                text=(f"✅ <b>Your complaint {complaint.ticket_ref} was marked resolved.</b>\n"
-                      "If the issue is fixed, please confirm. If not, you can reopen it."),
+    if auto_approved:
+        citizen_text = (f"✅ <b>Complaint {complaint.ticket_ref} resolved and photo-verified.</b>\n"
+                        "Our check found the reported issue is no longer visible. "
+                        "If that is right, confirm; if not, reopen it.")
+        kind = "citizen_resolved_verified"
+    else:
+        citizen_text = (f"✅ <b>Complaint {complaint.ticket_ref} was marked resolved.</b>\n"
+                        "If the issue is fixed, please confirm. If not, you can reopen it.")
+        kind = "citizen_resolved"
+
+    notify.send(db, chat_id=complaint.citizen_chat_id, kind=kind,
+                complaint_id=complaint.id, text=citizen_text,
                 photo_file_id=after_file_id or None,
                 dedupe_key=f"cit_resolved:{complaint.id}:{complaint.resolved_at.timestamp()}")
 
-    return {"complaint": complaint, "verification": verdict}
+    return {"complaint": complaint, "verification": verdict,
+            "auto_approved": auto_approved, "pending_reason": pending_reason}
+
 
 
 def citizen_feedback(db: Session, complaint: Complaint, *, confirmed: Optional[bool],

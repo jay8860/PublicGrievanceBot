@@ -145,8 +145,13 @@ dashboard either way).
 
 `Dockerfile`/`Procfile`/`start.sh`/`build.sh` are set up for Railway-style
 hosting: the API process serves the built dashboard and proxies Telegram
-images; the bot runs as a separate worker process. Set all environment
-variables above in the host's dashboard before first deploy.
+images; the bot runs alongside it. Set all environment variables above in the
+host's dashboard before first deploy.
+
+**Deploying on a Railway volume (SQLite + photos, no Postgres):** see
+[`RAILWAY_VOLUME.md`](RAILWAY_VOLUME.md) — volume mount path, the exact
+`DATABASE_URL=sqlite:////data/grievance.db` / `MEDIA_ROOT=/data/media` values,
+first-boot seeding, photo archiving, backups and troubleshooting.
 
 ## Known limitations / what's still needed before a public district rollout
 
@@ -165,9 +170,11 @@ variables above in the host's dashboard before first deploy.
   L1 officers, the last one read from the sheet wins (a warning is logged
   when this happens). For fine-grained ward-level routing, the code would
   need extending to match on Zone too.
-- **Telegram `file_id`s are not a durable photo archive** — for
-  RTI/audit-grade record-keeping, pull photos into permanent storage
-  (S3/GCS) instead of only referencing Telegram's copy.
+- **Telegram `file_id`s are not a durable photo archive** — set `MEDIA_ROOT` to
+  a folder on a persistent disk (Railway volume, see `RAILWAY_VOLUME.md`) and
+  every before/after photo is copied there at complaint/resolution time. Without
+  it the platform still only references Telegram's copy, which breaks if the
+  bot token is rotated.
 - **Single shared admin login** — no per-department accounts yet.
 - **No citizen consent/privacy notice** about what's collected (GPS,
   photo, Telegram chat ID) and how long it's retained — needed before

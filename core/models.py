@@ -170,7 +170,8 @@ class EscalationRule(Base):
     __table_args__ = (Index("ix_rules_dept", "department_id"),)
 
     def hours_for_level(self, level: int) -> int:
-        return {1: self.l1_hours, 2: self.l2_hours, 3: self.l3_hours}.get(level, self.l4_hours)
+        value = {1: self.l1_hours, 2: self.l2_hours, 3: self.l3_hours}.get(level, self.l4_hours)
+        return value if value is not None else 48
 
 
 # ------------------------------------------------------------------ complaints
